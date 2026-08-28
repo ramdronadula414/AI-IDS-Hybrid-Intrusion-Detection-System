@@ -447,6 +447,245 @@ def detect_dos_ddos(
     return alerts
 
 
+def detect_brute_force(
+    flow_df: pd.DataFrame,
+    min_attempts: int = 20,
+    service_ports=None,
+):
+    """
+    Detect repeated connection attempts that may indicate
+    SSH or FTP brute-force activity.
+
+    Detection idea:
+        same source IP
+        -> same target IP
+        -> authentication service port
+        -> many separate flows
+    """
+
+    if service_ports is None:
+        service_ports = {
+            21: "FTP",
+            22: "SSH",
+        }
+
+    required_columns = {
+        "src_ip",
+        "dst_ip",
+        "dst_port",
+    }
+
+    missing = (
+        required_columns
+        - set(flow_df.columns)
+    )
+
+    if missing:
+        raise ValueError(
+            f"Missing required flow columns: "
+            f"{sorted(missing)}"
+        )
+
+    df = flow_df.copy()
+
+    # =====================================================
+    # CLEAN FIELDS
+    # =====================================================
+
+    df["src_ip"] = (
+        df["src_ip"]
+        .astype(str)
+        .str.strip()
+    )
+
+    df["dst_ip"] = (
+        df["dst_ip"]
+        .astype(str)
+        .str.strip()
+    )
+
+    df["dst_port"] = pd.to_numeric(
+        df["dst_port"],
+        errors="coerce",
+    )
+
+    df = df.dropna(
+        subset=["dst_port"]
+    )
+
+    df["dst_port"] = (
+        df["dst_port"]
+        .astype(int)
+    )
+
+    # =====================================================
+    # ONLY AUTHENTICATION SERVICES
+    # =====================================================
+
+    auth_flows = df[
+        df["dst_port"].isin(
+            service_ports.keys()
+        )
+    ]
+
+    alerts = []
+
+    if auth_flows.empty:
+        return alerts
+
+    # =====================================================
+    # GROUP CONNECTION ATTEMPTS
+    # =====================================================
+
+    grouped = auth_flows.groupby(
+        [
+            "src_ip",
+            "dst_ip",
+            "dst_port",
+        ]
+    )
+
+    for (
+        source_ip,
+        target_ip,
+        target_port,
+    ), group in grouped:
+
+        attempts = len(group)
+
+        if attempts < min_attempts:
+            continue
+
+        service = service_ports.get(
+            int(target_port),
+            "Unknown",
+        )
+
+        # =================================================
+        # TIME INFORMATION
+        # =================================================
+
+        first_seen = "Unknown"
+        last_seen = "Unknown"
+        observed_window_seconds = None
+
+        if "timestamp" in group.columns:
+
+            timestamps = pd.to_datetime(
+                group["timestamp"],
+                errors="coerce",
+            ).dropna()
+
+            if not timestamps.empty:
+
+                first_time = timestamps.min()
+                last_time = timestamps.max()
+
+                first_seen = str(
+                    first_time
+                )
+
+                last_seen = str(
+                    last_time
+                )
+
+                observed_window_seconds = (
+                    last_time
+                    - first_time
+                ).total_seconds()
+
+        # =================================================
+        # SEVERITY
+        # =================================================
+
+        if attempts >= 100:
+
+            severity = "CRITICAL"
+
+        elif attempts >= 50:
+
+            severity = "HIGH"
+
+        else:
+
+            severity = "MEDIUM"
+
+        # =================================================
+        # SOURCE PORT INFORMATION
+        # =================================================
+
+        unique_source_ports = 0
+
+        if "src_port" in group.columns:
+
+            unique_source_ports = int(
+                group[
+                    "src_port"
+                ]
+                .nunique()
+            )
+
+        # =================================================
+        # ALERT
+        # =================================================
+
+        alerts.append(
+            {
+                "detection_engine":
+                    "Behavioral IDS",
+
+                "attack_type":
+                    f"{service} Brute Force",
+
+                "source_ip":
+                    str(source_ip),
+
+                "target_ip":
+                    str(target_ip),
+
+                "target_port":
+                    int(target_port),
+
+                "target_service":
+                    service,
+
+                "total_attempts":
+                    int(attempts),
+
+                "total_flows":
+                    int(attempts),
+
+                "unique_source_ports":
+                    unique_source_ports,
+
+                "first_seen":
+                    first_seen,
+
+                "last_seen":
+                    last_seen,
+
+                "observed_window_seconds":
+                    observed_window_seconds,
+
+                "severity":
+                    severity,
+
+                "status":
+                    "ALERT",
+
+                "reason": (
+                    f"{source_ip} generated "
+                    f"{attempts} connection attempts "
+                    f"toward {target_ip}:"
+                    f"{int(target_port)} "
+                    f"({service})"
+                ),
+            }
+        )
+
+    return alerts
+
+
 def analyze_behavior(
     flow_df: pd.DataFrame,
 ):
@@ -477,6 +716,17 @@ def analyze_behavior(
             min_total_flows=100,
             min_sources=3,
             min_flows_per_source=20,
+        )
+    )
+
+    # =====================================================
+    # SSH / FTP BRUTE FORCE
+    # =====================================================
+
+    alerts.extend(
+        detect_brute_force(
+            flow_df,
+            min_attempts=20,
         )
     )
 

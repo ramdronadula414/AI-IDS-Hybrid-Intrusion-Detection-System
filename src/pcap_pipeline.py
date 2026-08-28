@@ -262,10 +262,15 @@ def analyze_pcap(pcap_file):
             )
 
             # =================================================
-            # SOURCE ENRICHMENT (PortScan: single source)
+            # SOURCE ENRICHMENT (PortScan / Brute Force:
+            # single source)
             # =================================================
 
-            if attack_type == "PortScan":
+            if attack_type in {
+                "PortScan",
+                "SSH Brute Force",
+                "FTP Brute Force",
+            }:
 
                 os_info = os_fingerprints.get(
                     source_ip,
@@ -497,6 +502,44 @@ def analyze_pcap(pcap_file):
                 )
 
             # =================================================
+            # BRUTE FORCE-SPECIFIC DETAILS
+            # =================================================
+
+            elif attack_type in {
+                "SSH Brute Force",
+                "FTP Brute Force",
+            }:
+
+                print(
+                    f"Target Port: "
+                    f"{alert.get('target_port', 'Unknown')}"
+                )
+
+                print(
+                    f"Target Service: "
+                    f"{alert.get('target_service', 'Unknown')}"
+                )
+
+                print(
+                    f"Total Attempts: "
+                    f"{alert.get('total_attempts', 0)}"
+                )
+
+                print(
+                    f"Unique Source Ports: "
+                    f"{alert.get('unique_source_ports', 0)}"
+                )
+
+                window = alert.get(
+                    "observed_window_seconds"
+                )
+
+                print(
+                    f"Observed Window: "
+                    f"{window if window is not None else 'Unknown'} seconds"
+                )
+
+            # =================================================
             # DOS / DDOS-SPECIFIC DETAILS
             # =================================================
 
@@ -615,14 +658,18 @@ def analyze_pcap(pcap_file):
             )
 
             # =================================================
-            # SOURCE NETWORK INTELLIGENCE (PortScan only —
-            # DoS/DDoS attacker details were already printed
-            # above via the per-attacker Attacker Intelligence
-            # loop; the old combined-IP enrichment no longer
-            # runs for those attack types)
+            # SOURCE NETWORK INTELLIGENCE (PortScan / Brute
+            # Force only — DoS/DDoS attacker details were
+            # already printed above via the per-attacker
+            # Attacker Intelligence loop; the old combined-IP
+            # enrichment no longer runs for those attack types)
             # =================================================
 
-            if attack_type == "PortScan":
+            if attack_type in {
+                "PortScan",
+                "SSH Brute Force",
+                "FTP Brute Force",
+            }:
 
                 print(
                     f"Source Scope: "
@@ -882,6 +929,153 @@ def analyze_pcap(pcap_file):
                         "Unavailable"
                     )
                 ),
+            })
+
+        # =================================================
+        # BRUTE FORCE DETAILS
+        # =================================================
+
+        elif attack_type in {
+            "SSH Brute Force",
+            "FTP Brute Force",
+        }:
+
+            source_ip = str(
+                alert.get(
+                    "source_ip",
+                    "Unknown"
+                )
+            )
+
+            os_info = os_fingerprints.get(
+                source_ip,
+                {}
+            )
+
+            threat_info = enrich_flow({
+                "src_ip": source_ip,
+                "dst_ip": target_ip,
+                "src_port": "Unknown",
+                "dst_port": alert.get(
+                    "target_port",
+                    "Unknown"
+                ),
+                "protocol": "6",
+                "timestamp": alert.get(
+                    "first_seen",
+                    "Unknown"
+                ),
+            })
+
+            source_geo = threat_info.get(
+                "source_geolocation",
+                {}
+            )
+
+            source_asn = threat_info.get(
+                "source_asn_info",
+                {}
+            )
+
+            source_ip_info = threat_info.get(
+                "source_ip_info",
+                {}
+            )
+
+            alert_record.update({
+                "source_ip":
+                    source_ip,
+
+                "target_port":
+                    alert.get(
+                        "target_port"
+                    ),
+
+                "target_service":
+                    alert.get(
+                        "target_service",
+                        "Unknown"
+                    ),
+
+                "total_attempts":
+                    alert.get(
+                        "total_attempts",
+                        0
+                    ),
+
+                "unique_source_ports":
+                    alert.get(
+                        "unique_source_ports",
+                        0
+                    ),
+
+                "observed_window_seconds":
+                    alert.get(
+                        "observed_window_seconds"
+                    ),
+
+                "source_scope":
+                    source_ip_info.get(
+                        "scope",
+                        "Unknown"
+                    ),
+
+                "estimated_os":
+                    os_info.get(
+                        "estimated_os",
+                        "Unknown"
+                    ),
+
+                "os_confidence":
+                    os_info.get(
+                        "confidence",
+                        "Unknown"
+                    ),
+
+                "observed_ttl":
+                    os_info.get(
+                        "observed_ttl"
+                    ),
+
+                "tcp_window":
+                    os_info.get(
+                        "tcp_window"
+                    ),
+
+                "country":
+                    source_geo.get(
+                        "country",
+                        source_geo.get(
+                            "reason",
+                            "Unknown"
+                        )
+                    ),
+
+                "region":
+                    source_geo.get(
+                        "region",
+                        "Unknown"
+                    ),
+
+                "city":
+                    source_geo.get(
+                        "city",
+                        "Unknown"
+                    ),
+
+                "asn":
+                    source_asn.get(
+                        "asn"
+                    ),
+
+                "organization":
+                    source_asn.get(
+                        "organization",
+                        source_asn.get(
+                            "reason",
+                            "Unavailable"
+                        )
+                    ),
             })
 
         # =================================================
