@@ -686,6 +686,281 @@ def detect_brute_force(
     return alerts
 
 
+def detect_slow_http(
+    flow_df: pd.DataFrame,
+    min_suspicious_flows: int = 15,
+    min_flow_duration: float = 5.0,
+    max_packets_per_flow: int = 10,
+    http_ports=None,
+):
+    """
+    Detect Slowloris / Slow HTTP-style behavior.
+
+    Heuristic:
+    - same source -> same HTTP target
+    - multiple long-lived flows
+    - low packet count per flow
+    - HTTP-related destination port
+
+    flow_duration is expected in seconds for the 
+    python cicflowmeter implementation used by this project.
+    """
+
+    if http_ports is None:
+        http_ports = {
+            80: "HTTP",
+            443: "HTTPS",
+            8080: "HTTP-ALT",
+        }
+
+    required = {
+        "src_ip",
+        "dst_ip",
+        "dst_port",
+        "flow_duration",
+        "tot_fwd_pkts",
+        "tot_bwd_pkts",
+    }
+
+    missing = required - set(
+        flow_df.columns
+    )
+
+    if missing:
+        raise ValueError(
+            f"Missing required flow columns: "
+            f"{sorted(missing)}"
+        )
+
+    df = flow_df.copy()
+
+    df["src_ip"] = (
+        df["src_ip"]
+        .astype(str)
+        .str.strip()
+    )
+
+    df["dst_ip"] = (
+        df["dst_ip"]
+        .astype(str)
+        .str.strip()
+    )
+
+    df["dst_port"] = pd.to_numeric(
+        df["dst_port"],
+        errors="coerce",
+    )
+
+    df["flow_duration"] = pd.to_numeric(
+        df["flow_duration"],
+        errors="coerce",
+    )
+
+    df["tot_fwd_pkts"] = pd.to_numeric(
+        df["tot_fwd_pkts"],
+        errors="coerce",
+    ).fillna(0)
+
+    df["tot_bwd_pkts"] = pd.to_numeric(
+        df["tot_bwd_pkts"],
+        errors="coerce",
+    ).fillna(0)
+
+    df = df.dropna(
+        subset=[
+            "dst_port",
+            "flow_duration",
+        ]
+    )
+
+    df["dst_port"] = (
+        df["dst_port"]
+        .astype(int)
+    )
+
+    df["total_packets"] = (
+        df["tot_fwd_pkts"]
+        + df["tot_bwd_pkts"]
+    )
+
+    # =====================================================
+    # SLOW HTTP CANDIDATES
+    # =====================================================
+
+    candidates = df[
+        (
+            df["dst_port"].isin(
+                http_ports.keys()
+            )
+        )
+        &
+        (
+            df["flow_duration"]
+            >= min_flow_duration
+        )
+        &
+        (
+            df["total_packets"]
+            <= max_packets_per_flow
+        )
+    ]
+
+    alerts = []
+
+    if candidates.empty:
+        return alerts
+
+    grouped = candidates.groupby(
+        [
+            "src_ip",
+            "dst_ip",
+            "dst_port",
+        ]
+    )
+
+    for (
+        source_ip,
+        target_ip,
+        target_port,
+    ), group in grouped:
+
+        suspicious_flows = len(
+            group
+        )
+
+        if (
+            suspicious_flows
+            < min_suspicious_flows
+        ):
+            continue
+
+        service = http_ports.get(
+            int(target_port),
+            "HTTP",
+        )
+
+        avg_duration = float(
+            group[
+                "flow_duration"
+            ].mean()
+        )
+
+        max_duration = float(
+            group[
+                "flow_duration"
+            ].max()
+        )
+
+        avg_packets = float(
+            group[
+                "total_packets"
+            ].mean()
+        )
+
+        first_seen = "Unknown"
+        last_seen = "Unknown"
+        observed_window_seconds = None
+
+        if "timestamp" in group.columns:
+
+            timestamps = pd.to_datetime(
+                group["timestamp"],
+                errors="coerce",
+            ).dropna()
+
+            if not timestamps.empty:
+
+                first_time = timestamps.min()
+                last_time = timestamps.max()
+
+                first_seen = str(
+                    first_time
+                )
+
+                last_seen = str(
+                    last_time
+                )
+
+                observed_window_seconds = (
+                    last_time
+                    - first_time
+                ).total_seconds()
+
+        if suspicious_flows >= 50:
+
+            severity = "CRITICAL"
+
+        elif suspicious_flows >= 30:
+
+            severity = "HIGH"
+
+        else:
+
+            severity = "MEDIUM"
+
+        alerts.append(
+            {
+                "detection_engine":
+                    "Behavioral IDS",
+
+                "attack_type":
+                    "Slow HTTP",
+
+                "source_ip":
+                    str(source_ip),
+
+                "target_ip":
+                    str(target_ip),
+
+                "target_port":
+                    int(target_port),
+
+                "target_service":
+                    service,
+
+                "suspicious_flows":
+                    int(suspicious_flows),
+
+                "total_flows":
+                    int(suspicious_flows),
+
+                "average_flow_duration":
+                    avg_duration,
+
+                "max_flow_duration":
+                    max_duration,
+
+                "average_packets_per_flow":
+                    avg_packets,
+
+                "first_seen":
+                    first_seen,
+
+                "last_seen":
+                    last_seen,
+
+                "observed_window_seconds":
+                    observed_window_seconds,
+
+                "severity":
+                    severity,
+
+                "status":
+                    "ALERT",
+
+                "reason": (
+                    f"{source_ip} maintained "
+                    f"{suspicious_flows} long-lived "
+                    f"low-packet connections toward "
+                    f"{target_ip}:{int(target_port)} "
+                    f"({service})"
+                ),
+            }
+        )
+
+    return alerts
+
+
 def analyze_behavior(
     flow_df: pd.DataFrame,
 ):
@@ -727,6 +1002,19 @@ def analyze_behavior(
         detect_brute_force(
             flow_df,
             min_attempts=20,
+        )
+    )
+
+    # =====================================================
+    # SLOW HTTP / SLOWLORIS
+    # =====================================================
+
+    alerts.extend(
+        detect_slow_http(
+            flow_df,
+            min_suspicious_flows=15,
+            min_flow_duration=5.0,
+            max_packets_per_flow=10,
         )
     )
 

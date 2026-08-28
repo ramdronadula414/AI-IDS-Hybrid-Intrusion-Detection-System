@@ -262,14 +262,15 @@ def analyze_pcap(pcap_file):
             )
 
             # =================================================
-            # SOURCE ENRICHMENT (PortScan / Brute Force:
-            # single source)
+            # SOURCE ENRICHMENT (PortScan / Brute Force /
+            # Slow HTTP: single source)
             # =================================================
 
             if attack_type in {
                 "PortScan",
                 "SSH Brute Force",
                 "FTP Brute Force",
+                "Slow HTTP",
             }:
 
                 os_info = os_fingerprints.get(
@@ -540,6 +541,51 @@ def analyze_pcap(pcap_file):
                 )
 
             # =================================================
+            # SLOW HTTP-SPECIFIC DETAILS
+            # =================================================
+
+            elif attack_type == "Slow HTTP":
+
+                print(
+                    f"Target Port: "
+                    f"{alert.get('target_port', 'Unknown')}"
+                )
+
+                print(
+                    f"Target Service: "
+                    f"{alert.get('target_service', 'Unknown')}"
+                )
+
+                print(
+                    f"Suspicious Flows: "
+                    f"{alert.get('suspicious_flows', 0)}"
+                )
+
+                print(
+                    f"Average Flow Duration: "
+                    f"{alert.get('average_flow_duration', 'Unknown')} seconds"
+                )
+
+                print(
+                    f"Maximum Flow Duration: "
+                    f"{alert.get('max_flow_duration', 'Unknown')} seconds"
+                )
+
+                print(
+                    f"Average Packets / Flow: "
+                    f"{alert.get('average_packets_per_flow', 'Unknown')}"
+                )
+
+                window = alert.get(
+                    "observed_window_seconds"
+                )
+
+                print(
+                    f"Observed Window: "
+                    f"{window if window is not None else 'Unknown'} seconds"
+                )
+
+            # =================================================
             # DOS / DDOS-SPECIFIC DETAILS
             # =================================================
 
@@ -659,16 +705,18 @@ def analyze_pcap(pcap_file):
 
             # =================================================
             # SOURCE NETWORK INTELLIGENCE (PortScan / Brute
-            # Force only — DoS/DDoS attacker details were
-            # already printed above via the per-attacker
-            # Attacker Intelligence loop; the old combined-IP
-            # enrichment no longer runs for those attack types)
+            # Force / Slow HTTP only — DoS/DDoS attacker
+            # details were already printed above via the
+            # per-attacker Attacker Intelligence loop; the old
+            # combined-IP enrichment no longer runs for those
+            # attack types)
             # =================================================
 
             if attack_type in {
                 "PortScan",
                 "SSH Brute Force",
                 "FTP Brute Force",
+                "Slow HTTP",
             }:
 
                 print(
@@ -1007,6 +1055,160 @@ def analyze_pcap(pcap_file):
                     alert.get(
                         "unique_source_ports",
                         0
+                    ),
+
+                "observed_window_seconds":
+                    alert.get(
+                        "observed_window_seconds"
+                    ),
+
+                "source_scope":
+                    source_ip_info.get(
+                        "scope",
+                        "Unknown"
+                    ),
+
+                "estimated_os":
+                    os_info.get(
+                        "estimated_os",
+                        "Unknown"
+                    ),
+
+                "os_confidence":
+                    os_info.get(
+                        "confidence",
+                        "Unknown"
+                    ),
+
+                "observed_ttl":
+                    os_info.get(
+                        "observed_ttl"
+                    ),
+
+                "tcp_window":
+                    os_info.get(
+                        "tcp_window"
+                    ),
+
+                "country":
+                    source_geo.get(
+                        "country",
+                        source_geo.get(
+                            "reason",
+                            "Unknown"
+                        )
+                    ),
+
+                "region":
+                    source_geo.get(
+                        "region",
+                        "Unknown"
+                    ),
+
+                "city":
+                    source_geo.get(
+                        "city",
+                        "Unknown"
+                    ),
+
+                "asn":
+                    source_asn.get(
+                        "asn"
+                    ),
+
+                "organization":
+                    source_asn.get(
+                        "organization",
+                        source_asn.get(
+                            "reason",
+                            "Unavailable"
+                        )
+                    ),
+            })
+
+        # =================================================
+        # SLOW HTTP DETAILS
+        # =================================================
+
+        elif attack_type == "Slow HTTP":
+
+            source_ip = str(
+                alert.get(
+                    "source_ip",
+                    "Unknown"
+                )
+            )
+
+            os_info = os_fingerprints.get(
+                source_ip,
+                {}
+            )
+
+            threat_info = enrich_flow({
+                "src_ip": source_ip,
+                "dst_ip": target_ip,
+                "src_port": "Unknown",
+                "dst_port": alert.get(
+                    "target_port",
+                    "Unknown"
+                ),
+                "protocol": "6",
+                "timestamp": alert.get(
+                    "first_seen",
+                    "Unknown"
+                ),
+            })
+
+            source_geo = threat_info.get(
+                "source_geolocation",
+                {}
+            )
+
+            source_asn = threat_info.get(
+                "source_asn_info",
+                {}
+            )
+
+            source_ip_info = threat_info.get(
+                "source_ip_info",
+                {}
+            )
+
+            alert_record.update({
+
+                "source_ip":
+                    source_ip,
+
+                "target_port":
+                    alert.get(
+                        "target_port"
+                    ),
+
+                "target_service":
+                    alert.get(
+                        "target_service",
+                        "Unknown"
+                    ),
+
+                "suspicious_flows":
+                    alert.get(
+                        "suspicious_flows",
+                        0
+                    ),
+
+                "average_flow_duration":
+                    alert.get(
+                        "average_flow_duration"
+                    ),
+
+                "max_flow_duration":
+                    alert.get(
+                        "max_flow_duration"
+                    ),
+
+                "average_packets_per_flow":
+                    alert.get(
+                        "average_packets_per_flow"
                     ),
 
                 "observed_window_seconds":
