@@ -1314,6 +1314,432 @@ def render_security_alert(alert, alert_number):
                 )
 
         # =================================================
+        # BRUTE FORCE
+        # =================================================
+
+        elif attack_type in {
+            "SSH Brute Force",
+            "FTP Brute Force",
+        }:
+
+            st.markdown(
+                f"#### {attack_type} Investigation"
+            )
+
+            b1, b2, b3, b4 = st.columns(4)
+
+            with b1:
+                st.metric(
+                    "Source IP",
+                    alert.get(
+                        "source_ip",
+                        "Unknown"
+                    ),
+                )
+
+            with b2:
+                st.metric(
+                    "Target Service",
+                    alert.get(
+                        "target_service",
+                        "Unknown"
+                    ),
+                )
+
+            with b3:
+                st.metric(
+                    "Target Port",
+                    alert.get(
+                        "target_port",
+                        "Unknown"
+                    ),
+                )
+
+            with b4:
+                st.metric(
+                    "Total Attempts",
+                    alert.get(
+                        "total_attempts",
+                        0
+                    ),
+                )
+
+            b5, b6, b7, b8 = st.columns(4)
+
+            with b5:
+                st.metric(
+                    "Unique Source Ports",
+                    alert.get(
+                        "unique_source_ports",
+                        0
+                    ),
+                )
+
+            with b6:
+                window = alert.get(
+                    "observed_window_seconds"
+                )
+
+                st.metric(
+                    "Observed Window",
+                    (
+                        f"{window:.2f}s"
+                        if isinstance(
+                            window,
+                            (int, float)
+                        )
+                        else "Unknown"
+                    ),
+                )
+
+            with b7:
+                st.metric(
+                    "Estimated OS",
+                    alert.get(
+                        "estimated_os",
+                        "Unknown"
+                    ),
+                )
+
+            with b8:
+                st.metric(
+                    "OS Confidence",
+                    alert.get(
+                        "os_confidence",
+                        "Unknown"
+                    ),
+                )
+
+            st.markdown(
+                "##### Source Intelligence"
+            )
+
+            brute_source_info = pd.DataFrame({
+                "Field": [
+                    "Source IP",
+                    "Target IP",
+                    "Target Service",
+                    "Network Scope",
+                    "Observed TTL",
+                    "TCP Window",
+                    "Country",
+                    "Region",
+                    "City",
+                    "ASN",
+                    "Organization",
+                    "First Seen",
+                    "Last Seen",
+                ],
+
+                "Value": [
+                    alert.get(
+                        "source_ip",
+                        "Unknown"
+                    ),
+
+                    alert.get(
+                        "target_ip",
+                        "Unknown"
+                    ),
+
+                    alert.get(
+                        "target_service",
+                        "Unknown"
+                    ),
+
+                    alert.get(
+                        "source_scope",
+                        "Unknown"
+                    ),
+
+                    alert.get(
+                        "observed_ttl",
+                        "Unknown"
+                    ),
+
+                    alert.get(
+                        "tcp_window",
+                        "Unknown"
+                    ),
+
+                    alert.get(
+                        "country",
+                        "Unknown"
+                    ),
+
+                    alert.get(
+                        "region",
+                        "Unknown"
+                    ),
+
+                    alert.get(
+                        "city",
+                        "Unknown"
+                    ),
+
+                    (
+                        alert.get("asn")
+                        if alert.get("asn") is not None
+                        else "Unavailable"
+                    ),
+
+                    alert.get(
+                        "organization",
+                        "Unknown"
+                    ),
+
+                    alert.get(
+                        "first_seen",
+                        "Unknown"
+                    ),
+
+                    alert.get(
+                        "last_seen",
+                        "Unknown"
+                    ),
+                ]
+            })
+
+            st.dataframe(
+                brute_source_info,
+                use_container_width=True,
+                hide_index=True,
+            )
+
+        # =================================================
+        # SLOW HTTP
+        # =================================================
+
+        elif attack_type == "Slow HTTP":
+
+            st.markdown(
+                "#### Slow HTTP Investigation"
+            )
+
+            s1, s2, s3, s4 = st.columns(4)
+
+            with s1:
+                st.metric(
+                    "Source IP",
+                    alert.get(
+                        "source_ip",
+                        "Unknown"
+                    ),
+                )
+
+            with s2:
+                st.metric(
+                    "Target",
+                    (
+                        f"{target_ip}:{target_port}"
+                        if target_port is not None
+                        else target_ip
+                    ),
+                )
+
+            with s3:
+                st.metric(
+                    "Target Service",
+                    alert.get(
+                        "target_service",
+                        "HTTP"
+                    ),
+                )
+
+            with s4:
+                st.metric(
+                    "Suspicious Flows",
+                    alert.get(
+                        "suspicious_flows",
+                        0
+                    ),
+                )
+
+            s5, s6, s7, s8 = st.columns(4)
+
+            with s5:
+                duration = alert.get(
+                    "average_flow_duration"
+                )
+
+                st.metric(
+                    "Avg Flow Duration",
+                    (
+                        f"{duration:.2f}s"
+                        if isinstance(
+                            duration,
+                            (int, float)
+                        )
+                        else "Unknown"
+                    ),
+                )
+
+            with s6:
+                maximum = alert.get(
+                    "max_flow_duration"
+                )
+
+                st.metric(
+                    "Max Flow Duration",
+                    (
+                        f"{maximum:.2f}s"
+                        if isinstance(
+                            maximum,
+                            (int, float)
+                        )
+                        else "Unknown"
+                    ),
+                )
+
+            with s7:
+                packets = alert.get(
+                    "average_packets_per_flow"
+                )
+
+                st.metric(
+                    "Avg Packets / Flow",
+                    (
+                        f"{packets:.2f}"
+                        if isinstance(
+                            packets,
+                            (int, float)
+                        )
+                        else "Unknown"
+                    ),
+                )
+
+            with s8:
+                window = alert.get(
+                    "observed_window_seconds"
+                )
+
+                st.metric(
+                    "Observed Window",
+                    (
+                        f"{window:.2f}s"
+                        if isinstance(
+                            window,
+                            (int, float)
+                        )
+                        else "Unknown"
+                    ),
+                )
+
+            st.markdown(
+                "##### Source Intelligence"
+            )
+
+            slow_http_info = pd.DataFrame({
+                "Field": [
+                    "Source IP",
+                    "Target IP",
+                    "Target Port",
+                    "Target Service",
+                    "Network Scope",
+                    "Estimated OS",
+                    "OS Confidence",
+                    "Observed TTL",
+                    "TCP Window",
+                    "Country",
+                    "Region",
+                    "City",
+                    "ASN",
+                    "Organization",
+                    "First Seen",
+                    "Last Seen",
+                ],
+
+                "Value": [
+                    alert.get(
+                        "source_ip",
+                        "Unknown"
+                    ),
+
+                    alert.get(
+                        "target_ip",
+                        "Unknown"
+                    ),
+
+                    alert.get(
+                        "target_port",
+                        "Unknown"
+                    ),
+
+                    alert.get(
+                        "target_service",
+                        "HTTP"
+                    ),
+
+                    alert.get(
+                        "source_scope",
+                        "Unknown"
+                    ),
+
+                    alert.get(
+                        "estimated_os",
+                        "Unknown"
+                    ),
+
+                    alert.get(
+                        "os_confidence",
+                        "Unknown"
+                    ),
+
+                    alert.get(
+                        "observed_ttl",
+                        "Unknown"
+                    ),
+
+                    alert.get(
+                        "tcp_window",
+                        "Unknown"
+                    ),
+
+                    alert.get(
+                        "country",
+                        "Unknown"
+                    ),
+
+                    alert.get(
+                        "region",
+                        "Unknown"
+                    ),
+
+                    alert.get(
+                        "city",
+                        "Unknown"
+                    ),
+
+                    (
+                        alert.get("asn")
+                        if alert.get("asn") is not None
+                        else "Unavailable"
+                    ),
+
+                    alert.get(
+                        "organization",
+                        "Unknown"
+                    ),
+
+                    alert.get(
+                        "first_seen",
+                        "Unknown"
+                    ),
+
+                    alert.get(
+                        "last_seen",
+                        "Unknown"
+                    ),
+                ]
+            })
+
+            st.dataframe(
+                slow_http_info,
+                use_container_width=True,
+                hide_index=True,
+            )
+
+        # =================================================
         # EVIDENCE
         # =================================================
 
@@ -2307,17 +2733,32 @@ elif page == "Traffic Analyzer":
                                 f"{target_port_item}"
                             )
 
-                        if attack_type_item == "PortScan":
+                        if attack_type_item in {
+                            "PortScan",
+                            "SSH Brute Force",
+                            "FTP Brute Force",
+                            "Slow HTTP",
+                        }:
 
                             source_description = alert.get(
                                 "source_ip",
                                 "Unknown"
                             )
 
-                        else:
+                        elif attack_type_item in {
+                            "DoS",
+                            "DDoS",
+                        }:
 
                             source_description = (
-                                f"{alert.get('source_count', 0)} sources"
+                                f"{alert.get('source_count', 1)} sources"
+                            )
+
+                        else:
+
+                            source_description = alert.get(
+                                "source_ip",
+                                "Unknown"
                             )
 
                         alert_summary_rows.append({
