@@ -1,0 +1,12 @@
+Optimized CIC-IDS2017 Multiclass XGBoost
+Training time: 975.21 seconds
+Best iteration: 265
+Best validation mlogloss: 0.01116857895630183
+
+Test Accuracy: 0.998788
+Test Macro Precision: 0.924109
+Test Macro Recall: 0.888714
+Test Macro F1: 0.891748
+Test Weighted Precision: 0.998885
+Test Weighted Recall: 0.998788
+Test Weighted F1: 0.998807
