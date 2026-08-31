@@ -27,7 +27,8 @@ SEVERITY_RANK = {
 
 def correlate_detection(
     ml_results,
-    behavior_alerts,
+    behavioral_alerts,
+    web_alerts=None,
 ):
     """
     Produce the overall IDS decision.
@@ -39,6 +40,9 @@ def correlate_detection(
     4. If neither detects anything -> BENIGN
     """
 
+    if web_alerts is None:
+        web_alerts = []
+
     ml_attack_count = int(
         (
             ml_results[
@@ -48,16 +52,21 @@ def correlate_detection(
     )
 
     behavioral_attack_count = len(
-        behavior_alerts
+        behavioral_alerts
+    )
+
+    web_alert_count = len(
+        web_alerts
     )
 
     # -----------------------------------------------------
-    # Neither engine detected an attack
+    # No engine detected an attack
     # -----------------------------------------------------
 
     if (
         ml_attack_count == 0
         and behavioral_attack_count == 0
+        and web_alert_count == 0
     ):
 
         return {
@@ -67,6 +76,7 @@ def correlate_detection(
             "detection_source": "None",
             "ml_attack_count": 0,
             "behavioral_alert_count": 0,
+            "web_alert_count": 0,
             "reason": (
                 "No malicious activity detected "
                 "by ML or behavioral engines."
@@ -100,17 +110,31 @@ def correlate_detection(
                 "attack_type",
                 "Unknown"
             )
-            for alert in behavior_alerts
+            for alert in behavioral_alerts
         )
     )
 
+    web_attack_types = [
+        alert.get(
+            "attack_type",
+            "Unknown"
+        )
+        for alert in web_alerts
+    ]
+
     # -----------------------------------------------------
-    # Determine strongest behavioral severity
+    # Determine strongest severity across behavioral
+    # and web alerts
     # -----------------------------------------------------
+
+    security_alerts = (
+        list(behavioral_alerts)
+        + list(web_alerts)
+    )
 
     strongest_severity = "MEDIUM"
 
-    if behavior_alerts:
+    if security_alerts:
 
         strongest_severity = max(
             (
@@ -118,7 +142,7 @@ def correlate_detection(
                     "severity",
                     "MEDIUM"
                 )
-                for alert in behavior_alerts
+                for alert in security_alerts
             ),
             key=lambda x: SEVERITY_RANK.get(
                 x,
@@ -127,18 +151,22 @@ def correlate_detection(
         )
 
     # -----------------------------------------------------
-    # BOTH ML + BEHAVIOR
+    # ML + (BEHAVIORAL AND/OR WEB)
     # -----------------------------------------------------
 
     if (
         ml_attack_count > 0
-        and behavioral_attack_count > 0
+        and (
+            behavioral_attack_count > 0
+            or web_alert_count > 0
+        )
     ):
 
         combined_types = list(
             dict.fromkeys(
                 ml_attack_types
                 + behavioral_attack_types
+                + web_attack_types
             )
         )
 
@@ -149,15 +177,16 @@ def correlate_detection(
             ),
             "severity": strongest_severity,
             "detection_source": (
-                "ML + Behavioral IDS"
+                "Hybrid IDS"
             ),
             "ml_attack_count": ml_attack_count,
             "behavioral_alert_count": (
                 behavioral_attack_count
             ),
+            "web_alert_count": web_alert_count,
             "reason": (
                 "Attack indicators were detected "
-                "by both ML and behavioral engines."
+                "by multiple AI-IDS detection engines."
             ),
         }
 
@@ -178,6 +207,7 @@ def correlate_detection(
             ),
             "ml_attack_count": ml_attack_count,
             "behavioral_alert_count": 0,
+            "web_alert_count": 0,
             "reason": (
                 "The ML intrusion detection model "
                 "classified one or more flows "
@@ -186,26 +216,52 @@ def correlate_detection(
         }
 
     # -----------------------------------------------------
-    # BEHAVIORAL ONLY
+    # BEHAVIORAL AND/OR WEB (no ML detection)
     # -----------------------------------------------------
 
-    return {
-        "final_decision": "ATTACK",
-        "attack_type": ", ".join(
+    combined_types = list(
+        dict.fromkeys(
             behavioral_attack_types
-        ),
-        "severity": strongest_severity,
-        "detection_source": (
-            "Behavioral IDS"
-        ),
-        "ml_attack_count": 0,
-        "behavioral_alert_count": (
-            behavioral_attack_count
-        ),
-        "reason": (
+            + web_attack_types
+        )
+    )
+
+    if behavioral_attack_count > 0 and web_alert_count > 0:
+        detection_source = "Behavioral IDS + Payload Inspection"
+        reason = (
+            "Suspicious cross-flow behavior and "
+            "malicious payloads were detected even "
+            "though individual flows were not "
+            "classified as attacks by the ML model."
+        )
+    elif web_alert_count > 0:
+        detection_source = "Payload Inspection"
+        reason = (
+            "Malicious web payload indicators were "
+            "detected even though individual flows "
+            "were not classified as attacks by the "
+            "ML model."
+        )
+    else:
+        detection_source = "Behavioral IDS"
+        reason = (
             "Suspicious cross-flow behavior was "
             "detected even though individual "
             "flows were not classified as attacks "
             "by the ML model."
+        )
+
+    return {
+        "final_decision": "ATTACK",
+        "attack_type": ", ".join(
+            combined_types
         ),
+        "severity": strongest_severity,
+        "detection_source": detection_source,
+        "ml_attack_count": 0,
+        "behavioral_alert_count": (
+            behavioral_attack_count
+        ),
+        "web_alert_count": web_alert_count,
+        "reason": reason,
     }

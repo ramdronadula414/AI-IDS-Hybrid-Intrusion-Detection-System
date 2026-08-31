@@ -1740,6 +1740,168 @@ def render_security_alert(alert, alert_number):
             )
 
         # =================================================
+        # WEB ATTACKS
+        # =================================================
+
+        elif attack_type in {
+            "Web Attack - XSS",
+            "Web Attack - SQL Injection",
+        }:
+
+            st.markdown(
+                "#### Web Attack Investigation"
+            )
+
+            w1, w2, w3, w4 = st.columns(4)
+
+            with w1:
+                st.metric(
+                    "Source IP",
+                    alert.get(
+                        "source_ip",
+                        "Unknown"
+                    ),
+                )
+
+            with w2:
+                st.metric(
+                    "Target IP",
+                    alert.get(
+                        "target_ip",
+                        "Unknown"
+                    ),
+                )
+
+            with w3:
+                st.metric(
+                    "Target Port",
+                    alert.get(
+                        "target_port",
+                        "Unknown"
+                    ),
+                )
+
+            with w4:
+                st.metric(
+                    "Packet Number",
+                    alert.get(
+                        "packet_number",
+                        "Unknown"
+                    ),
+                )
+
+            # =============================================
+            # CONNECTION DETAILS
+            # =============================================
+
+            st.markdown(
+                "##### Network Context"
+            )
+
+            network_info = pd.DataFrame({
+                "Field": [
+                    "Attack Type",
+                    "Detection Engine",
+                    "Source IP",
+                    "Source Port",
+                    "Target IP",
+                    "Target Port",
+                    "Severity",
+                ],
+
+                "Value": [
+                    attack_type,
+
+                    alert.get(
+                        "detection_engine",
+                        "Payload Inspection"
+                    ),
+
+                    alert.get(
+                        "source_ip",
+                        "Unknown"
+                    ),
+
+                    alert.get(
+                        "source_port",
+                        "Unknown"
+                    ),
+
+                    alert.get(
+                        "target_ip",
+                        "Unknown"
+                    ),
+
+                    alert.get(
+                        "target_port",
+                        "Unknown"
+                    ),
+
+                    severity,
+                ],
+            })
+
+            st.dataframe(
+                network_info,
+                use_container_width=True,
+                hide_index=True,
+            )
+
+            # =============================================
+            # PAYLOAD INDICATORS
+            # =============================================
+
+            matched_patterns = alert.get(
+                "matched_patterns",
+                []
+            )
+
+            st.markdown(
+                "##### Detected Payload Indicators"
+            )
+
+            if matched_patterns:
+
+                indicator_df = pd.DataFrame({
+                    "Indicator": matched_patterns
+                })
+
+                st.dataframe(
+                    indicator_df,
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
+            else:
+
+                st.info(
+                    "No individual payload indicators "
+                    "were recorded."
+                )
+
+            # =============================================
+            # ATTACK-SPECIFIC EXPLANATION
+            # =============================================
+
+            if attack_type == "Web Attack - XSS":
+
+                st.warning(
+                    "The HTTP request contains patterns "
+                    "associated with Cross-Site Scripting "
+                    "(XSS). Payload inspection detected "
+                    "script-related indicators in the request."
+                )
+
+            elif attack_type == "Web Attack - SQL Injection":
+
+                st.error(
+                    "The HTTP request contains patterns "
+                    "associated with SQL Injection. "
+                    "Payload inspection detected SQL-control "
+                    "indicators in the request."
+                )
+
+        # =================================================
         # EVIDENCE
         # =================================================
 
@@ -2738,6 +2900,8 @@ elif page == "Traffic Analyzer":
                             "SSH Brute Force",
                             "FTP Brute Force",
                             "Slow HTTP",
+                            "Web Attack - XSS",
+                            "Web Attack - SQL Injection",
                         }:
 
                             source_description = alert.get(
@@ -2820,6 +2984,7 @@ elif page == "Traffic Analyzer":
                         "Detection Engine": [
                             "XGBoost ML IDS",
                             "Behavioral IDS",
+                            "Payload Inspection",
                             "Correlation Engine",
                         ],
 
@@ -2834,6 +2999,11 @@ elif page == "Traffic Analyzer":
                                 "alert(s)"
                             ),
 
+                            (
+                                f"{report.get('web_alerts', 0)} "
+                                "web payload alert(s)"
+                            ),
+
                             final_decision,
                         ],
 
@@ -2844,6 +3014,10 @@ elif page == "Traffic Analyzer":
 
                             (
                                 "Cross-flow behavior analysis"
+                            ),
+
+                            (
+                                "HTTP payload inspection"
                             ),
 
                             (

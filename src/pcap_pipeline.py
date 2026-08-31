@@ -35,6 +35,7 @@ from src.behavior_detector import analyze_behavior
 from src.threat_intelligence import enrich_flow
 from src.os_fingerprint import fingerprint_pcap
 from src.correlation_engine import correlate_detection
+from src.web_attack_detector import detect_web_attacks
 
 
 # =========================================================
@@ -68,7 +69,7 @@ def analyze_pcap(pcap_file):
     # STEP 1 — PROCESS PCAP
     # =====================================================
 
-    print("\n[1/4] Processing PCAP...")
+    print("\n[1/5] Processing PCAP...")
 
     model_feature_file = process_pcap(
         pcap_file
@@ -147,7 +148,7 @@ def analyze_pcap(pcap_file):
     # STEP 2 — XGBOOST ML IDS
     # =====================================================
 
-    print("\n[2/4] Running XGBoost ML IDS...")
+    print("\n[2/5] Running XGBoost ML IDS...")
 
     ml_results = predict(
         model_features
@@ -211,7 +212,7 @@ def analyze_pcap(pcap_file):
     # =====================================================
 
     print(
-        "\n[3/4] Running Behavioral IDS..."
+        "\n[3/5] Running Behavioral IDS..."
     )
 
     behavior_alerts = analyze_behavior(
@@ -795,14 +796,103 @@ def analyze_pcap(pcap_file):
         )
 
     # =====================================================
-    # STEP 4 — CORRELATION ENGINE
+    # STEP 4 — WEB PAYLOAD INSPECTION
     # =====================================================
 
-    print("\n[4/4] Correlating detection results...")
+    print("\n[4/5] Running Web Payload Inspection...")
+
+    web_alerts = detect_web_attacks(
+        pcap_file
+    )
+
+    print(
+        f"Web payload alerts detected: "
+        f"{len(web_alerts)}"
+    )
+
+    if web_alerts:
+
+        print(
+            "\nDetected web attack threats:"
+        )
+
+        for alert in web_alerts:
+
+            print(
+                "\n" + "-" * 60
+            )
+
+            print(
+                f"Severity: "
+                f"{alert.get('severity', 'Unknown')}"
+            )
+
+            print(
+                f"Attack Type: "
+                f"{alert.get('attack_type', 'Unknown')}"
+            )
+
+            print(
+                f"Detection Engine: "
+                f"{alert.get('detection_engine', 'Unknown')}"
+            )
+
+            print(
+                f"Source IP: "
+                f"{alert.get('source_ip', 'Unknown')}"
+            )
+
+            print(
+                f"Target IP: "
+                f"{alert.get('target_ip', 'Unknown')}"
+            )
+
+            print(
+                f"Source Port: "
+                f"{alert.get('source_port', 'Unknown')}"
+            )
+
+            print(
+                f"Target Port: "
+                f"{alert.get('target_port', 'Unknown')}"
+            )
+
+            print(
+                f"Packet Number: "
+                f"{alert.get('packet_number', 'Unknown')}"
+            )
+
+            print(
+                "Matched Indicators: "
+                + ", ".join(
+                    alert.get(
+                        "matched_patterns",
+                        []
+                    )
+                )
+            )
+
+            print(
+                f"Reason: "
+                f"{alert.get('reason', 'Unknown')}"
+            )
+
+    else:
+
+        print(
+            "No web payload threats detected."
+        )
+
+    # =====================================================
+    # STEP 5 — CORRELATION ENGINE
+    # =====================================================
+
+    print("\n[5/5] Correlating detection results...")
 
     final_result = correlate_detection(
         ml_results,
-        behavior_alerts
+        behavior_alerts,
+        web_alerts,
     )
 
     # =====================================================
@@ -1434,6 +1524,67 @@ def analyze_pcap(pcap_file):
             alert_record
         )
 
+    for alert in web_alerts:
+
+        detailed_alerts.append({
+            "attack_type":
+                alert.get(
+                    "attack_type",
+                    "Unknown"
+                ),
+
+            "severity":
+                alert.get(
+                    "severity",
+                    "Unknown"
+                ),
+
+            "detection_engine":
+                alert.get(
+                    "detection_engine",
+                    "Payload Inspection"
+                ),
+
+            "source_ip":
+                alert.get(
+                    "source_ip",
+                    "Unknown"
+                ),
+
+            "target_ip":
+                alert.get(
+                    "target_ip",
+                    "Unknown"
+                ),
+
+            "source_port":
+                alert.get(
+                    "source_port"
+                ),
+
+            "target_port":
+                alert.get(
+                    "target_port"
+                ),
+
+            "packet_number":
+                alert.get(
+                    "packet_number"
+                ),
+
+            "matched_patterns":
+                alert.get(
+                    "matched_patterns",
+                    []
+                ),
+
+            "reason":
+                alert.get(
+                    "reason",
+                    "Unknown"
+                ),
+        })
+
     # =====================================================
     # BUILD STRUCTURED SECURITY REPORT
     # =====================================================
@@ -1446,6 +1597,11 @@ def analyze_pcap(pcap_file):
 
         "ml_attack_flows": final_result["ml_attack_count"],
         "behavioral_alerts": final_result["behavioral_alert_count"],
+
+        "web_alerts": final_result.get(
+            "web_alert_count",
+            0
+        ),
 
         "reason": final_result["reason"],
 
