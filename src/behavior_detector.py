@@ -961,6 +961,149 @@ def detect_slow_http(
     return alerts
 
 
+def detect_beaconing(
+    df,
+    min_connections=10,
+    max_interval_cv=0.25,
+):
+    """
+    Detect possible Bot / C2 beaconing behavior.
+
+    Looks for repeated connections from the same source to the
+    same destination and destination port at approximately
+    regular time intervals.
+    """
+
+    alerts = []
+
+    required_columns = {
+        "src_ip",
+        "dst_ip",
+        "dst_port",
+        "timestamp",
+    }
+
+    if not required_columns.issubset(df.columns):
+        return alerts
+
+    work = df.copy()
+
+    work["timestamp"] = pd.to_datetime(
+        work["timestamp"],
+        errors="coerce",
+    )
+
+    work["dst_port"] = pd.to_numeric(
+        work["dst_port"],
+        errors="coerce",
+    )
+
+    work = work.dropna(
+        subset=[
+            "src_ip",
+            "dst_ip",
+            "dst_port",
+            "timestamp",
+        ]
+    )
+
+    groups = work.groupby(
+        ["src_ip", "dst_ip", "dst_port"]
+    )
+
+    for (src_ip, dst_ip, dst_port), group in groups:
+
+        group = group.sort_values("timestamp")
+
+        connection_count = len(group)
+
+        if connection_count < min_connections:
+            continue
+
+        timestamps = group["timestamp"]
+
+        intervals = (
+            timestamps.diff()
+            .dt.total_seconds()
+            .dropna()
+        )
+
+        if len(intervals) < min_connections - 1:
+            continue
+
+        # Ignore duplicate/invalid timestamps.
+        intervals = intervals[intervals > 0]
+
+        if len(intervals) < min_connections - 1:
+            continue
+
+        mean_interval = float(intervals.mean())
+
+        if mean_interval <= 0:
+            continue
+
+        std_interval = float(intervals.std(ddof=0))
+
+        interval_cv = (
+            std_interval / mean_interval
+            if mean_interval > 0
+            else float("inf")
+        )
+
+        # Lower coefficient of variation means
+        # more regular periodic communication.
+        if interval_cv > max_interval_cv:
+            continue
+
+        if connection_count >= 30:
+            severity = "CRITICAL"
+        elif connection_count >= 20:
+            severity = "HIGH"
+        else:
+            severity = "MEDIUM"
+
+        alert = {
+            "detection_engine": "Behavioral IDS",
+            "attack_type": "Bot / C2 Beaconing",
+            "source_ip": str(src_ip),
+            "target_ip": str(dst_ip),
+            "target_port": int(dst_port),
+            "total_connections": int(connection_count),
+            "average_interval_seconds": round(
+                mean_interval,
+                3,
+            ),
+            "interval_std_seconds": round(
+                std_interval,
+                3,
+            ),
+            "interval_cv": round(
+                interval_cv,
+                4,
+            ),
+            "first_seen": str(
+                timestamps.iloc[0]
+            ),
+            "last_seen": str(
+                timestamps.iloc[-1]
+            ),
+            "severity": severity,
+            "status": "ALERT",
+            "reason": (
+                f"{src_ip} repeatedly contacted "
+                f"{dst_ip}:{int(dst_port)} "
+                f"{connection_count} times with an "
+                f"average interval of "
+                f"{mean_interval:.2f} seconds "
+                f"(timing CV={interval_cv:.3f})"
+            ),
+        }
+
+        alerts.append(alert)
+
+    return alerts
+
+
 def analyze_behavior(
     flow_df: pd.DataFrame,
 ):
@@ -1015,6 +1158,18 @@ def analyze_behavior(
             min_suspicious_flows=15,
             min_flow_duration=5.0,
             max_packets_per_flow=10,
+        )
+    )
+
+    # =====================================================
+    # BOT / C2 BEACONING
+    # =====================================================
+
+    alerts.extend(
+        detect_beaconing(
+            flow_df,
+            min_connections=10,
+            max_interval_cv=0.25,
         )
     )
 

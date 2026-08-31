@@ -1902,6 +1902,173 @@ def render_security_alert(alert, alert_number):
                 )
 
         # =================================================
+        # BOT / C2 BEACONING
+        # =================================================
+
+        elif attack_type == "Bot / C2 Beaconing":
+
+            st.markdown(
+                "#### Bot / C2 Beaconing Investigation"
+            )
+
+            b1, b2, b3, b4 = st.columns(4)
+
+            with b1:
+                st.metric(
+                    "Source IP",
+                    alert.get(
+                        "source_ip",
+                        "Unknown"
+                    ),
+                )
+
+            with b2:
+                st.metric(
+                    "Target",
+                    (
+                        f"{target_ip}:{target_port}"
+                        if target_port is not None
+                        else target_ip
+                    ),
+                )
+
+            with b3:
+                st.metric(
+                    "Connections",
+                    alert.get(
+                        "total_connections",
+                        0
+                    ),
+                )
+
+            with b4:
+                st.metric(
+                    "Severity",
+                    severity,
+                )
+
+            b5, b6, b7, b8 = st.columns(4)
+
+            with b5:
+                interval = alert.get(
+                    "average_interval_seconds"
+                )
+
+                st.metric(
+                    "Avg Interval",
+                    (
+                        f"{interval:.2f}s"
+                        if isinstance(
+                            interval,
+                            (int, float)
+                        )
+                        else "Unknown"
+                    ),
+                )
+
+            with b6:
+                std_interval = alert.get(
+                    "interval_std_seconds"
+                )
+
+                st.metric(
+                    "Interval Std Dev",
+                    (
+                        f"{std_interval:.3f}s"
+                        if isinstance(
+                            std_interval,
+                            (int, float)
+                        )
+                        else "Unknown"
+                    ),
+                )
+
+            with b7:
+                cv = alert.get(
+                    "interval_cv"
+                )
+
+                st.metric(
+                    "Timing CV",
+                    (
+                        f"{cv:.4f}"
+                        if isinstance(
+                            cv,
+                            (int, float)
+                        )
+                        else "Unknown"
+                    ),
+                )
+
+            with b8:
+                st.metric(
+                    "Estimated OS",
+                    alert.get(
+                        "estimated_os",
+                        "Unknown"
+                    ),
+                )
+
+            st.markdown(
+                "##### Source Intelligence"
+            )
+
+            beacon_info = pd.DataFrame({
+                "Field": [
+                    "Source IP",
+                    "Target IP",
+                    "Target Port",
+                    "Network Scope",
+                    "Estimated OS",
+                    "OS Confidence",
+                    "Observed TTL",
+                    "TCP Window",
+                    "Country",
+                    "Region",
+                    "City",
+                    "ASN",
+                    "Organization",
+                    "First Seen",
+                    "Last Seen",
+                ],
+
+                "Value": [
+                    alert.get("source_ip", "Unknown"),
+                    alert.get("target_ip", "Unknown"),
+                    alert.get("target_port", "Unknown"),
+                    alert.get("source_scope", "Unknown"),
+                    alert.get("estimated_os", "Unknown"),
+                    alert.get("os_confidence", "Unknown"),
+                    alert.get("observed_ttl", "Unknown"),
+                    alert.get("tcp_window", "Unknown"),
+                    alert.get("country", "Unknown"),
+                    alert.get("region", "Unknown"),
+                    alert.get("city", "Unknown"),
+                    (
+                        alert.get("asn")
+                        if alert.get("asn") is not None
+                        else "Unavailable"
+                    ),
+                    alert.get("organization", "Unknown"),
+                    alert.get("first_seen", "Unknown"),
+                    alert.get("last_seen", "Unknown"),
+                ],
+            })
+
+            st.dataframe(
+                beacon_info,
+                use_container_width=True,
+                hide_index=True,
+            )
+
+            st.info(
+                "Regular outbound connection timing was "
+                "observed. A very low timing coefficient "
+                "of variation can indicate automated "
+                "bot or command-and-control beaconing."
+            )
+
+        # =================================================
         # EVIDENCE
         # =================================================
 
@@ -2902,6 +3069,7 @@ elif page == "Traffic Analyzer":
                             "Slow HTTP",
                             "Web Attack - XSS",
                             "Web Attack - SQL Injection",
+                            "Bot / C2 Beaconing",
                         }:
 
                             source_description = alert.get(

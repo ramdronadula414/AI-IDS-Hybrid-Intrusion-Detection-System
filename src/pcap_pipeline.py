@@ -272,6 +272,7 @@ def analyze_pcap(pcap_file):
                 "SSH Brute Force",
                 "FTP Brute Force",
                 "Slow HTTP",
+                "Bot / C2 Beaconing",
             }:
 
                 os_info = os_fingerprints.get(
@@ -587,6 +588,37 @@ def analyze_pcap(pcap_file):
                 )
 
             # =================================================
+            # BOT / C2 BEACONING-SPECIFIC DETAILS
+            # =================================================
+
+            elif attack_type == "Bot / C2 Beaconing":
+
+                print(
+                    f"Target Port: "
+                    f"{alert.get('target_port', 'Unknown')}"
+                )
+
+                print(
+                    f"Total Connections: "
+                    f"{alert.get('total_connections', 0)}"
+                )
+
+                print(
+                    f"Average Interval: "
+                    f"{alert.get('average_interval_seconds', 'Unknown')} seconds"
+                )
+
+                print(
+                    f"Interval Std Dev: "
+                    f"{alert.get('interval_std_seconds', 'Unknown')} seconds"
+                )
+
+                print(
+                    f"Interval CV: "
+                    f"{alert.get('interval_cv', 'Unknown')}"
+                )
+
+            # =================================================
             # DOS / DDOS-SPECIFIC DETAILS
             # =================================================
 
@@ -718,6 +750,7 @@ def analyze_pcap(pcap_file):
                 "SSH Brute Force",
                 "FTP Brute Force",
                 "Slow HTTP",
+                "Bot / C2 Beaconing",
             }:
 
                 print(
@@ -1304,6 +1337,149 @@ def analyze_pcap(pcap_file):
                 "observed_window_seconds":
                     alert.get(
                         "observed_window_seconds"
+                    ),
+
+                "source_scope":
+                    source_ip_info.get(
+                        "scope",
+                        "Unknown"
+                    ),
+
+                "estimated_os":
+                    os_info.get(
+                        "estimated_os",
+                        "Unknown"
+                    ),
+
+                "os_confidence":
+                    os_info.get(
+                        "confidence",
+                        "Unknown"
+                    ),
+
+                "observed_ttl":
+                    os_info.get(
+                        "observed_ttl"
+                    ),
+
+                "tcp_window":
+                    os_info.get(
+                        "tcp_window"
+                    ),
+
+                "country":
+                    source_geo.get(
+                        "country",
+                        source_geo.get(
+                            "reason",
+                            "Unknown"
+                        )
+                    ),
+
+                "region":
+                    source_geo.get(
+                        "region",
+                        "Unknown"
+                    ),
+
+                "city":
+                    source_geo.get(
+                        "city",
+                        "Unknown"
+                    ),
+
+                "asn":
+                    source_asn.get(
+                        "asn"
+                    ),
+
+                "organization":
+                    source_asn.get(
+                        "organization",
+                        source_asn.get(
+                            "reason",
+                            "Unavailable"
+                        )
+                    ),
+            })
+
+        # =================================================
+        # BOT / C2 BEACONING DETAILS
+        # =================================================
+
+        elif attack_type == "Bot / C2 Beaconing":
+
+            source_ip = str(
+                alert.get(
+                    "source_ip",
+                    "Unknown"
+                )
+            )
+
+            os_info = os_fingerprints.get(
+                source_ip,
+                {}
+            )
+
+            threat_info = enrich_flow({
+                "src_ip": source_ip,
+                "dst_ip": target_ip,
+                "src_port": "Unknown",
+                "dst_port": alert.get(
+                    "target_port",
+                    "Unknown"
+                ),
+                "protocol": "6",
+                "timestamp": alert.get(
+                    "first_seen",
+                    "Unknown"
+                ),
+            })
+
+            source_geo = threat_info.get(
+                "source_geolocation",
+                {}
+            )
+
+            source_asn = threat_info.get(
+                "source_asn_info",
+                {}
+            )
+
+            source_ip_info = threat_info.get(
+                "source_ip_info",
+                {}
+            )
+
+            alert_record.update({
+
+                "source_ip":
+                    source_ip,
+
+                "target_port":
+                    alert.get(
+                        "target_port"
+                    ),
+
+                "total_connections":
+                    alert.get(
+                        "total_connections",
+                        0
+                    ),
+
+                "average_interval_seconds":
+                    alert.get(
+                        "average_interval_seconds"
+                    ),
+
+                "interval_std_seconds":
+                    alert.get(
+                        "interval_std_seconds"
+                    ),
+
+                "interval_cv":
+                    alert.get(
+                        "interval_cv"
                     ),
 
                 "source_scope":
