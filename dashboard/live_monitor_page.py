@@ -1,10 +1,13 @@
-"""Streamlit page for persistent AI-IDS live monitoring data."""
+"""Streamlit page for persistent AI-IDS live monitoring data.
+
+Step 7 adds automatic, fragment-scoped refresh so the live-monitor page can
+poll the SQLite event store without reloading the complete dashboard.
+"""
 
 from __future__ import annotations
 
 from collections import Counter
 from datetime import datetime
-from pathlib import Path
 import html
 import sqlite3
 
@@ -12,6 +15,10 @@ import pandas as pd
 import streamlit as st
 
 from src.live_event_store import LiveEventStore
+
+
+DEFAULT_REFRESH_SECONDS = 3
+REFRESH_OPTIONS = [2, 3, 5, 10, 15, 30]
 
 
 def _friendly_time(value: object) -> str:
@@ -53,23 +60,8 @@ def _metric(title: str, value: object, note: str, accent: str) -> None:
     )
 
 
-def render_live_monitor_page() -> None:
-    """Render the dashboard reader for Step 5 SQLite live-event storage."""
-    store = LiveEventStore()
-
-    st.markdown(
-        '<div class="soc-page-title">Live Network Monitor</div>'
-        '<div class="soc-page-subtitle">Persistent view of continuously captured and correlated network activity</div>',
-        unsafe_allow_html=True,
-    )
-
-    top_left, top_right = st.columns([4, 1])
-    with top_left:
-        st.caption(f"Event database: {store.db_path}")
-    with top_right:
-        if st.button("↻ Refresh", use_container_width=True, key="refresh_live_monitor"):
-            st.rerun()
-
+def _render_live_data(store: LiveEventStore, auto_refresh: bool, refresh_seconds: int) -> None:
+    """Render one snapshot from the shared SQLite event store."""
     try:
         overview = store.overview()
         windows = store.recent_windows(limit=100)
@@ -83,6 +75,22 @@ def render_live_monitor_page() -> None:
     decision = str(latest.get("final_decision") or "WAITING")
     severity = str(latest.get("severity") or "NORMAL")
     attack_type = str(latest.get("attack_type") or "None")
+
+    status_left, status_right = st.columns([4, 1])
+    with status_left:
+        if auto_refresh:
+            st.markdown(
+                f"<span class='live-dot'></span> **LIVE** · refreshing every {refresh_seconds}s · "
+                f"last dashboard update `{datetime.now().strftime('%H:%M:%S')}`",
+                unsafe_allow_html=True,
+            )
+        else:
+            st.caption(
+                f"Automatic refresh paused · snapshot updated {datetime.now().strftime('%H:%M:%S')}"
+            )
+    with status_right:
+        if st.button("↻ Refresh now", use_container_width=True, key="refresh_live_monitor_now"):
+            st.rerun()
 
     m1, m2, m3, m4 = st.columns(4)
     with m1:
@@ -227,12 +235,55 @@ def render_live_monitor_page() -> None:
             )
         st.dataframe(pd.DataFrame(window_rows), use_container_width=True, hide_index=True)
 
+
+def render_live_monitor_page() -> None:
+    """Render the Step 7 auto-refreshing live network monitor."""
+    store = LiveEventStore()
+
+    st.markdown(
+        '<div class="soc-page-title">Live Network Monitor</div>'
+        '<div class="soc-page-subtitle">Continuously refreshed view of captured and correlated network activity</div>',
+        unsafe_allow_html=True,
+    )
+
+    control_left, control_mid, control_right = st.columns([3, 1, 1])
+    with control_left:
+        st.caption(f"Event database: {store.db_path}")
+    with control_mid:
+        auto_refresh = st.toggle(
+            "Auto refresh",
+            value=True,
+            key="live_auto_refresh",
+            help="Refresh only the live-data section without reloading the full dashboard.",
+        )
+    with control_right:
+        refresh_seconds = st.selectbox(
+            "Interval",
+            REFRESH_OPTIONS,
+            index=REFRESH_OPTIONS.index(DEFAULT_REFRESH_SECONDS),
+            format_func=lambda value: f"{value} sec",
+            key="live_refresh_seconds",
+            disabled=not auto_refresh,
+        )
+
+    fragment_factory = getattr(st, "fragment", None)
+    if callable(fragment_factory):
+        run_every = f"{refresh_seconds}s" if auto_refresh else None
+        live_fragment = fragment_factory(run_every=run_every)(_render_live_data)
+        live_fragment(store, auto_refresh, refresh_seconds)
+    else:
+        st.warning(
+            "This Streamlit version does not support fragment auto-refresh. "
+            "Upgrade Streamlit to enable Step 7 automatic refresh; manual refresh remains available."
+        )
+        _render_live_data(store, False, refresh_seconds)
+
     with st.expander("Run the live monitor from Kali"):
         st.code(
             "python src/live_monitor.py \\\n--interface eth0 \\\n--window 10 \\\n--filter \"tcp or udp\"",
             language="bash",
         )
         st.caption(
-            "The monitor writes completed windows and alerts into the SQLite event database. "
-            "This page reads that shared store; Step 7 will add automatic dashboard refresh."
+            "The live monitor writes completed windows and alerts into SQLite. "
+            "When Auto refresh is enabled, this page polls that shared store at the selected interval."
         )
