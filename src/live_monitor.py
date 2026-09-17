@@ -1,17 +1,28 @@
 """CLI live network monitor for AI-IDS.
 
-Phase 1 workflow:
-    local interface -> short PCAP window -> existing hybrid AI-IDS pipeline
-    -> cooldown/dedup -> terminal alert
+Step 4 architecture:
+    capture thread (main loop)
+        -> completed PCAP windows
+        -> queue
+        -> background analysis worker
+        -> hybrid AI-IDS pipeline
+        -> cooldown/dedup
+        -> terminal alert
 
-Use Ctrl+C to stop.
+Capture continues into the next window while the previous completed window is
+being analyzed. This removes the large capture blind spot that existed when
+capture and analysis ran sequentially.
 """
 
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 from pathlib import Path
+from queue import Empty, Queue
 import sys
+from threading import Event, Thread
+import time
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
@@ -19,14 +30,100 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from src.alert_manager import AlertManager
 from src.live_capture import capture_window, list_interfaces
-from src.live_flow_engine import cleanup_capture, make_window
+from src.live_flow_engine import FlowWindow, cleanup_capture, make_window
 from src.notification_engine import notify
 from src.realtime_detector import NoUsableFlowsError, analyze_live_window
+
+
+@dataclass
+class LiveStats:
+    windows_captured: int = 0
+    windows_enqueued: int = 0
+    windows_analyzed: int = 0
+    windows_skipped_empty: int = 0
+    windows_skipped_no_flows: int = 0
+    analysis_errors: int = 0
+    alerts_emitted: int = 0
+    packets_captured: int = 0
 
 
 def _extract_alerts(report: dict) -> list[dict]:
     alerts = report.get("alerts", [])
     return alerts if isinstance(alerts, list) else []
+
+
+def _analysis_worker(
+    work_queue: Queue,
+    stop_event: Event,
+    manager: AlertManager,
+    keep_pcaps: bool,
+    stats: LiveStats,
+) -> None:
+    """Consume completed capture windows and analyze them in the background."""
+    while True:
+        if stop_event.is_set() and work_queue.empty():
+            break
+
+        try:
+            window: FlowWindow = work_queue.get(timeout=0.25)
+        except Empty:
+            continue
+
+        try:
+            print(
+                f"\n[Analyzer] Window {window.sequence}: "
+                f"processing {window.packet_count} packet(s)..."
+            )
+
+            try:
+                report = analyze_live_window(window.pcap_path)
+            except NoUsableFlowsError as exc:
+                stats.windows_skipped_no_flows += 1
+                print(
+                    f"[Analyzer] Window {window.sequence}: "
+                    f"no usable CICFlowMeter flows; skipped."
+                )
+                print(f"[Analyzer] Detail: {exc}")
+                continue
+            except Exception as exc:
+                stats.analysis_errors += 1
+                print(
+                    f"[Analyzer] Window {window.sequence}: "
+                    f"analysis failed: {exc}"
+                )
+                continue
+
+            stats.windows_analyzed += 1
+
+            decision = report.get("final_decision", "UNKNOWN")
+            severity = report.get("severity", "UNKNOWN")
+            attack_type = report.get("attack_type", "Unknown")
+
+            print(
+                f"[Analyzer] Window {window.sequence} result: "
+                f"decision={decision} | severity={severity} | "
+                f"attack={attack_type}"
+            )
+
+            fresh_alerts = manager.filter_new_alerts(_extract_alerts(report))
+            if fresh_alerts:
+                for alert in fresh_alerts:
+                    notify(alert)
+                    stats.alerts_emitted += 1
+            elif decision == "ATTACK":
+                print(
+                    f"[Analyzer] Window {window.sequence}: "
+                    "attack already notified within cooldown window."
+                )
+            else:
+                print(
+                    f"[Analyzer] Window {window.sequence}: "
+                    "no new live alerts."
+                )
+        finally:
+            if not keep_pcaps:
+                cleanup_capture(window.pcap_path)
+            work_queue.task_done()
 
 
 def run_live_monitor(
@@ -36,23 +133,49 @@ def run_live_monitor(
     bpf_filter: str | None = None,
     keep_pcaps: bool = False,
     max_windows: int | None = None,
+    queue_size: int = 0,
 ) -> None:
+    """Capture continuously while a background worker analyzes prior windows.
+
+    queue_size=0 means an unbounded queue. A bounded queue can be used for
+    stress testing; capture waits briefly if analysis falls behind rather than
+    silently dropping evidence.
+    """
+    if max_windows is not None and max_windows <= 0:
+        raise ValueError("max_windows must be greater than zero")
+    if queue_size < 0:
+        raise ValueError("queue_size cannot be negative")
+
     manager = AlertManager(cooldown_seconds=cooldown_seconds)
-    sequence = 0
+    stats = LiveStats()
+    work_queue: Queue = Queue(maxsize=queue_size)
+    stop_event = Event()
+
+    worker = Thread(
+        target=_analysis_worker,
+        args=(work_queue, stop_event, manager, keep_pcaps, stats),
+        name="ai-ids-analysis-worker",
+        daemon=False,
+    )
+    worker.start()
 
     print("=" * 72)
-    print("AI-IDS LIVE NETWORK MONITOR")
+    print("AI-IDS LIVE NETWORK MONITOR — CONTINUOUS MODE")
     print("=" * 72)
     print(f"Interface       : {interface}")
     print(f"Capture window  : {window_seconds:.1f} seconds")
     print(f"Alert cooldown  : {cooldown_seconds:.1f} seconds")
     print(f"BPF filter      : {bpf_filter or 'None'}")
+    print(f"Queue size      : {'unbounded' if queue_size == 0 else queue_size}")
+    print("Architecture    : capture -> queue -> background analysis")
     print("Stop            : Ctrl+C")
+
+    sequence = 0
 
     try:
         while max_windows is None or sequence < max_windows:
             sequence += 1
-            print(f"\n[Window {sequence}] Capturing traffic...")
+            print(f"\n[Capture] Window {sequence}: capturing traffic...")
 
             result = capture_window(
                 interface=interface,
@@ -60,55 +183,112 @@ def run_live_monitor(
                 bpf_filter=bpf_filter,
             )
 
-            window = make_window(result.pcap_path, result.packet_count, sequence)
-            print(f"Packets captured: {window.packet_count}")
+            stats.windows_captured += 1
+            stats.packets_captured += result.packet_count
+
+            window = make_window(
+                result.pcap_path,
+                result.packet_count,
+                sequence,
+            )
+
+            print(
+                f"[Capture] Window {sequence}: "
+                f"{window.packet_count} packet(s) captured."
+            )
 
             if window.packet_count == 0:
-                print("No packets captured; skipping analysis.")
+                stats.windows_skipped_empty += 1
+                print(
+                    f"[Capture] Window {sequence}: "
+                    "idle window; nothing to analyze."
+                )
                 continue
 
-            try:
-                print("Running hybrid AI-IDS analysis...")
-                try:
-                    report = analyze_live_window(window.pcap_path)
-                except NoUsableFlowsError as exc:
-                    print(f"No usable CICFlowMeter flows in this window; skipping.\nReason: {exc}")
-                    continue
-
-                decision = report.get("final_decision", "UNKNOWN")
-                severity = report.get("severity", "UNKNOWN")
-                attack_type = report.get("attack_type", "Unknown")
-
+            # Enqueue as soon as the capture closes. The next capture starts on
+            # the next loop iteration while this window is analyzed separately.
+            if queue_size and work_queue.full():
                 print(
-                    f"Window result: decision={decision} | "
-                    f"severity={severity} | attack={attack_type}"
+                    f"[Capture] Window {sequence}: analysis queue is full; "
+                    "waiting so evidence is not dropped..."
                 )
 
-                fresh_alerts = manager.filter_new_alerts(_extract_alerts(report))
-                if fresh_alerts:
-                    for alert in fresh_alerts:
-                        notify(alert)
-                elif decision == "ATTACK":
-                    print("Attack already notified within cooldown window.")
-                else:
-                    print("No new live alerts.")
-            finally:
-                if not keep_pcaps:
-                    cleanup_capture(window.pcap_path)
+            work_queue.put(window)
+            stats.windows_enqueued += 1
+
+            print(
+                f"[Capture] Window {sequence}: queued for analysis "
+                f"(pending={work_queue.qsize()})."
+            )
 
     except KeyboardInterrupt:
-        print("\nLive monitor stopped by user.")
+        print("\n[Monitor] Stop requested by user.")
+    finally:
+        print("\n[Monitor] Capture stopped. Waiting for queued analysis...")
+        work_queue.join()
+        stop_event.set()
+        worker.join(timeout=10.0)
+
+        print("\n" + "=" * 72)
+        print("LIVE MONITOR SUMMARY")
+        print("=" * 72)
+        print(f"Windows captured       : {stats.windows_captured}")
+        print(f"Windows queued         : {stats.windows_enqueued}")
+        print(f"Windows analyzed       : {stats.windows_analyzed}")
+        print(f"Idle windows skipped   : {stats.windows_skipped_empty}")
+        print(f"Flowless windows       : {stats.windows_skipped_no_flows}")
+        print(f"Analysis errors        : {stats.analysis_errors}")
+        print(f"Packets captured       : {stats.packets_captured}")
+        print(f"Alerts emitted         : {stats.alerts_emitted}")
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="AI-IDS live network monitor")
-    parser.add_argument("--interface", "-i", help="Network interface to monitor")
-    parser.add_argument("--window", type=float, default=5.0, help="Capture window in seconds (default: 5)")
-    parser.add_argument("--cooldown", type=float, default=60.0, help="Duplicate-alert cooldown in seconds")
-    parser.add_argument("--filter", dest="bpf_filter", help="Optional BPF capture filter, e.g. 'tcp or udp'")
-    parser.add_argument("--keep-pcaps", action="store_true", help="Keep generated live PCAP windows")
-    parser.add_argument("--max-windows", type=int, help="Stop after N capture windows (useful for testing)")
-    parser.add_argument("--list-interfaces", action="store_true", help="List capture interfaces and exit")
+    parser = argparse.ArgumentParser(
+        description="AI-IDS continuous live network monitor"
+    )
+    parser.add_argument(
+        "--interface",
+        "-i",
+        help="Network interface to monitor",
+    )
+    parser.add_argument(
+        "--window",
+        type=float,
+        default=5.0,
+        help="Capture window in seconds (default: 5)",
+    )
+    parser.add_argument(
+        "--cooldown",
+        type=float,
+        default=60.0,
+        help="Duplicate-alert cooldown in seconds",
+    )
+    parser.add_argument(
+        "--filter",
+        dest="bpf_filter",
+        help="Optional BPF capture filter, e.g. 'tcp or udp'",
+    )
+    parser.add_argument(
+        "--keep-pcaps",
+        action="store_true",
+        help="Keep generated live PCAP windows",
+    )
+    parser.add_argument(
+        "--max-windows",
+        type=int,
+        help="Stop capture after N windows and finish queued analyses",
+    )
+    parser.add_argument(
+        "--queue-size",
+        type=int,
+        default=0,
+        help="Maximum pending analysis windows; 0 means unbounded",
+    )
+    parser.add_argument(
+        "--list-interfaces",
+        action="store_true",
+        help="List capture interfaces and exit",
+    )
     return parser
 
 
@@ -131,6 +311,7 @@ def main() -> None:
         bpf_filter=args.bpf_filter,
         keep_pcaps=args.keep_pcaps,
         max_windows=args.max_windows,
+        queue_size=args.queue_size,
     )
 
 
