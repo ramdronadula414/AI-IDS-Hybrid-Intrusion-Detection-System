@@ -1,7 +1,8 @@
 """AI-IDS Streamlit presentation shell.
 
-The working detection implementation remains in ``app_core.py``.
-This file changes only navigation, portable analyzer choices and UI layout.
+The working detection implementation remains in ``app_core.py``. This shell
+keeps the SOC presentation and adds a persistent Live Network Monitor page
+backed by the Step 5 SQLite event store.
 """
 
 from pathlib import Path
@@ -9,6 +10,8 @@ from collections import Counter
 import html
 import re
 import streamlit as st
+
+from dashboard.live_monitor_page import render_live_monitor_page
 
 _CORE_PATH = Path(__file__).with_name("app_core.py")
 _source = _CORE_PATH.read_text(encoding="utf-8")
@@ -43,8 +46,7 @@ _source = _source.replace(
 )
 
 # ---------------------------------------------------------------------
-# Security Dashboard replacement. Keep this block quote-safe: no nested
-# triple-single-quoted strings are used inside it.
+# SOC dashboard replacement
 # ---------------------------------------------------------------------
 _dashboard = r'''if page == "Security Dashboard":
 
@@ -108,7 +110,6 @@ _dashboard = r'''if page == "Security Dashboard":
             target_last_seen[str(target)] = last_seen
 
     c_left, c_mid, c_right = st.columns([1.08, .9, 1.1])
-
     with c_left:
         st.markdown('<div class="soc-panel-title">Threat Type Distribution</div><div class="soc-panel-sub">Latest correlated security events</div>', unsafe_allow_html=True)
         if total_alerts:
@@ -118,8 +119,7 @@ _dashboard = r'''if page == "Security Dashboard":
                 pct = round((count / total_alerts) * 100)
                 rows.append(f'<div class="legend-row"><span><i style="background:{palette[idx]}"></i>{html.escape(name)}</span><b>{count} ({pct}%)</b></div>')
             legend_html = "".join(rows)
-            chart_html = f"<div class='dist-card'><div class='donut'><div><b>{total_alerts}</b><span>Total Alerts</span></div></div><div class='legend'>{legend_html}</div></div>"
-            st.markdown(chart_html, unsafe_allow_html=True)
+            st.markdown(f"<div class='dist-card'><div class='donut'><div><b>{total_alerts}</b><span>Total Alerts</span></div></div><div class='legend'>{legend_html}</div></div>", unsafe_allow_html=True)
         else:
             st.markdown('<div class="empty-soc">No threat distribution yet. Run a PCAP analysis.</div>', unsafe_allow_html=True)
 
@@ -131,13 +131,11 @@ _dashboard = r'''if page == "Security Dashboard":
             count = severity_counts[name]
             pct = round((count / total_alerts) * 100) if total_alerts else 0
             sev_rows.append(f'<div class="legend-row"><span><i style="background:{sev_palette[name]}"></i>{name.title()}</span><b>{count} ({pct}%)</b></div>')
-        severity_html = "".join(sev_rows)
-        st.markdown(f"<div class='dist-card'><div class='donut donut-severity'><div><b>{total_alerts}</b><span>Total</span></div></div><div class='legend'>{severity_html}</div></div>", unsafe_allow_html=True)
+        st.markdown(f"<div class='dist-card'><div class='donut donut-severity'><div><b>{total_alerts}</b><span>Total</span></div></div><div class='legend'>{''.join(sev_rows)}</div></div>", unsafe_allow_html=True)
 
     with c_right:
         st.markdown('<div class="soc-panel-title">Investigation Snapshot</div><div class="soc-panel-sub">Latest capture/session activity</div>', unsafe_allow_html=True)
-        snapshot = f"<div class='activity-card'><div class='activity-grid'><div><b>{analyzed_flows}</b><span>Flows Analyzed</span></div><div><b class='danger'>{total_alerts}</b><span>Alerts Detected</span></div><div><b>{len(source_counter)}</b><span>Source IPs</span></div><div><b>{len(target_counter)}</b><span>Target IPs</span></div></div><div class='activity-note'><span class='live-dot'></span>Hybrid detection engines ready</div></div>"
-        st.markdown(snapshot, unsafe_allow_html=True)
+        st.markdown(f"<div class='activity-card'><div class='activity-grid'><div><b>{analyzed_flows}</b><span>Flows Analyzed</span></div><div><b class='danger'>{total_alerts}</b><span>Alerts Detected</span></div><div><b>{len(source_counter)}</b><span>Source IPs</span></div><div><b>{len(target_counter)}</b><span>Target IPs</span></div></div><div class='activity-note'><span class='live-dot'></span>Hybrid detection engines ready</div></div>", unsafe_allow_html=True)
 
     engine_col, ip_col = st.columns([1.55, .9])
     with engine_col:
@@ -175,9 +173,8 @@ _dashboard = r'''if page == "Security Dashboard":
             reason = html.escape(str(alert.get("reason", "Suspicious activity detected")))
             seen = html.escape(str(alert.get("first_seen", "Unknown")))
             css_sev = sev.lower() if sev in {"CRITICAL", "HIGH", "MEDIUM", "LOW"} else "medium"
-            card_html = f"<div class='recent-alert recent-{css_sev}'><div class='recent-head'><span class='recent-icon'>⚠</span><b>{attack}</b><small>{seen}</small></div><p>{reason}</p><div class='recent-route'><code>{src}</code><span>→</span><code>{target}</code></div><div class='sev-badge sev-{css_sev}'>{sev}</div></div>"
             with cards[idx]:
-                st.markdown(card_html, unsafe_allow_html=True)
+                st.markdown(f"<div class='recent-alert recent-{css_sev}'><div class='recent-head'><span class='recent-icon'>⚠</span><b>{attack}</b><small>{seen}</small></div><p>{reason}</p><div class='recent-route'><code>{src}</code><span>→</span><code>{target}</code></div><div class='sev-badge sev-{css_sev}'>{sev}</div></div>", unsafe_allow_html=True)
     else:
         st.markdown('<div class="empty-soc wide">No recent security alerts. Open PCAP Analyzer and run a capture to populate this dashboard.</div>', unsafe_allow_html=True)
 
@@ -199,6 +196,7 @@ if replacements != 1:
 _original_radio = st.radio
 _NAV_ITEMS = {
     "🛡️  Security Dashboard": "Security Dashboard",
+    "📡  Live Network Monitor": "Live Network Monitor",
     "🔗  PCAP Analyzer": "Traffic Analyzer",
     "📄  CSV Analyzer": "Traffic Analyzer",
     "📁  Batch Analysis": "Batch Detection",
@@ -210,6 +208,7 @@ def _navigation_radio(label, options, *args, **kwargs):
     options = list(options)
     if label == "Navigation" and "Traffic Analyzer" in options:
         selected = _original_radio(label, list(_NAV_ITEMS.keys()), *args, **kwargs)
+        st.session_state["_ai_ids_shell_page"] = _NAV_ITEMS[selected]
         if "PCAP Analyzer" in selected:
             st.session_state["_ai_ids_input_mode"] = "Upload PCAP / PCAPNG"
         elif "CSV Analyzer" in selected:
@@ -231,6 +230,10 @@ def _navigation_radio(label, options, *args, **kwargs):
 st.radio = _navigation_radio
 exec(compile(_source, str(_CORE_PATH), "exec"), globals())
 
+# app_core intentionally has no branch for this shell-only page.
+if st.session_state.get("_ai_ids_shell_page") == "Live Network Monitor":
+    render_live_monitor_page()
+
 # ---------------------------------------------------------------------
 # Final SOC visual layer
 # ---------------------------------------------------------------------
@@ -245,7 +248,7 @@ st.markdown(
     .brand{padding:4px 6px 21px!important;margin-bottom:18px!important}.brand-icon{width:53px!important;height:53px!important;border-radius:14px!important;box-shadow:0 0 30px rgba(31,220,240,.22)!important}.brand-title{font-size:22px!important}.brand-subtitle{font-size:10.5px!important;color:#7e9da9!important}
     section[data-testid="stSidebar"] [role="radiogroup"]{gap:10px!important}
     section[data-testid="stSidebar"] label[data-baseweb="radio"]>div:first-child,section[data-testid="stSidebar"] [role="radiogroup"] label>div:first-child,section[data-testid="stSidebar"] [role="radiogroup"] input[type="radio"]{display:none!important;visibility:hidden!important;width:0!important;margin:0!important;padding:0!important}
-    section[data-testid="stSidebar"] [role="radiogroup"] label{min-height:64px!important;padding:15px 16px!important;border-radius:13px!important;border:1px solid rgba(69,159,183,.25)!important;background:linear-gradient(145deg,rgba(6,25,37,.96),rgba(4,18,28,.98))!important;box-shadow:0 8px 22px rgba(0,0,0,.16)!important;transition:.18s ease!important}
+    section[data-testid="stSidebar"] [role="radiogroup"] label{min-height:58px!important;padding:13px 15px!important;border-radius:13px!important;border:1px solid rgba(69,159,183,.25)!important;background:linear-gradient(145deg,rgba(6,25,37,.96),rgba(4,18,28,.98))!important;box-shadow:0 8px 22px rgba(0,0,0,.16)!important;transition:.18s ease!important}
     section[data-testid="stSidebar"] [role="radiogroup"] label:hover{transform:translateY(-1px)!important;border-color:rgba(36,222,239,.48)!important;background:linear-gradient(145deg,rgba(7,42,56,.98),rgba(5,27,39,.98))!important}
     section[data-testid="stSidebar"] [role="radiogroup"] label:has(input:checked),section[data-testid="stSidebar"] [role="radiogroup"] label[aria-checked="true"]{border-color:#24e3ef!important;background:linear-gradient(135deg,rgba(8,72,84,.98),rgba(6,41,52,.98))!important;box-shadow:0 0 22px rgba(36,227,239,.22)!important}
     section[data-testid="stSidebar"] [role="radiogroup"] label p{font-size:13px!important;font-weight:800!important;color:#edfafd!important}
