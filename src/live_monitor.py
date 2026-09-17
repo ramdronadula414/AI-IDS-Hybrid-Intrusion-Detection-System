@@ -1,28 +1,24 @@
 """CLI live network monitor for AI-IDS.
 
-Step 4 architecture:
-    capture thread (main loop)
-        -> completed PCAP windows
-        -> queue
-        -> background analysis worker
-        -> hybrid AI-IDS pipeline
-        -> cooldown/dedup
-        -> terminal alert
+Step 5 architecture:
+    continuous capture -> queue -> background hybrid analysis
+        -> SQLite live event store
+        -> alert cooldown/dedup
+        -> terminal notification
 
-Capture continues into the next window while the previous completed window is
-being analyzed. This removes the large capture blind spot that existed when
-capture and analysis ran sequentially.
+The persistent store is shared with the future Streamlit live dashboard.
 """
 
 from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from queue import Empty, Queue
 import sys
 from threading import Event, Thread
-import time
+import uuid
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
@@ -30,6 +26,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from src.alert_manager import AlertManager
 from src.live_capture import capture_window, list_interfaces
+from src.live_event_store import DEFAULT_EVENT_DB, LiveEventStore
 from src.live_flow_engine import FlowWindow, cleanup_capture, make_window
 from src.notification_engine import notify
 from src.realtime_detector import NoUsableFlowsError, analyze_live_window
@@ -43,6 +40,7 @@ class LiveStats:
     windows_skipped_empty: int = 0
     windows_skipped_no_flows: int = 0
     analysis_errors: int = 0
+    persistence_errors: int = 0
     alerts_emitted: int = 0
     packets_captured: int = 0
 
@@ -58,8 +56,11 @@ def _analysis_worker(
     manager: AlertManager,
     keep_pcaps: bool,
     stats: LiveStats,
+    store: LiveEventStore,
+    session_id: str,
+    interface: str,
 ) -> None:
-    """Consume completed capture windows and analyze them in the background."""
+    """Consume completed capture windows and analyze/persist them."""
     while True:
         if stop_event.is_set() and work_queue.empty():
             break
@@ -105,7 +106,33 @@ def _analysis_worker(
                 f"attack={attack_type}"
             )
 
-            fresh_alerts = manager.filter_new_alerts(_extract_alerts(report))
+            all_alerts = _extract_alerts(report)
+            fresh_alerts = manager.filter_new_alerts(all_alerts)
+
+            try:
+                store.record_window(
+                    session_id=session_id,
+                    sequence=window.sequence,
+                    interface=interface,
+                    pcap_path=window.pcap_path,
+                    packet_count=window.packet_count,
+                    report=report,
+                    captured_at=datetime.fromtimestamp(
+                        window.created_at,
+                        tz=timezone.utc,
+                    ).isoformat(),
+                    notified_alerts=fresh_alerts,
+                )
+                print(
+                    f"[Store] Window {window.sequence}: persisted to "
+                    f"{store.db_path}"
+                )
+            except Exception as exc:
+                stats.persistence_errors += 1
+                print(
+                    f"[Store] Window {window.sequence}: persistence failed: {exc}"
+                )
+
             if fresh_alerts:
                 for alert in fresh_alerts:
                     notify(alert)
@@ -134,13 +161,9 @@ def run_live_monitor(
     keep_pcaps: bool = False,
     max_windows: int | None = None,
     queue_size: int = 0,
+    event_db: Path | str = DEFAULT_EVENT_DB,
 ) -> None:
-    """Capture continuously while a background worker analyzes prior windows.
-
-    queue_size=0 means an unbounded queue. A bounded queue can be used for
-    stress testing; capture waits briefly if analysis falls behind rather than
-    silently dropping evidence.
-    """
+    """Continuously capture while a background worker analyzes prior windows."""
     if max_windows is not None and max_windows <= 0:
         raise ValueError("max_windows must be greater than zero")
     if queue_size < 0:
@@ -150,27 +173,48 @@ def run_live_monitor(
     stats = LiveStats()
     work_queue: Queue = Queue(maxsize=queue_size)
     stop_event = Event()
+    store = LiveEventStore(event_db)
+    session_id = uuid.uuid4().hex
+
+    store.start_session(
+        session_id=session_id,
+        interface=interface,
+        window_seconds=window_seconds,
+        bpf_filter=bpf_filter,
+    )
 
     worker = Thread(
         target=_analysis_worker,
-        args=(work_queue, stop_event, manager, keep_pcaps, stats),
+        args=(
+            work_queue,
+            stop_event,
+            manager,
+            keep_pcaps,
+            stats,
+            store,
+            session_id,
+            interface,
+        ),
         name="ai-ids-analysis-worker",
         daemon=False,
     )
     worker.start()
 
     print("=" * 72)
-    print("AI-IDS LIVE NETWORK MONITOR — CONTINUOUS MODE")
+    print("AI-IDS LIVE NETWORK MONITOR — PERSISTENT CONTINUOUS MODE")
     print("=" * 72)
+    print(f"Session ID      : {session_id}")
     print(f"Interface       : {interface}")
     print(f"Capture window  : {window_seconds:.1f} seconds")
     print(f"Alert cooldown  : {cooldown_seconds:.1f} seconds")
     print(f"BPF filter      : {bpf_filter or 'None'}")
     print(f"Queue size      : {'unbounded' if queue_size == 0 else queue_size}")
-    print("Architecture    : capture -> queue -> background analysis")
+    print(f"Event database  : {store.db_path}")
+    print("Architecture    : capture -> queue -> analysis -> SQLite -> alert")
     print("Stop            : Ctrl+C")
 
     sequence = 0
+    session_status = "COMPLETED"
 
     try:
         while max_windows is None or sequence < max_windows:
@@ -205,8 +249,6 @@ def run_live_monitor(
                 )
                 continue
 
-            # Enqueue as soon as the capture closes. The next capture starts on
-            # the next loop iteration while this window is analyzed separately.
             if queue_size and work_queue.full():
                 print(
                     f"[Capture] Window {sequence}: analysis queue is full; "
@@ -222,12 +264,19 @@ def run_live_monitor(
             )
 
     except KeyboardInterrupt:
+        session_status = "STOPPED"
         print("\n[Monitor] Stop requested by user.")
+    except Exception:
+        session_status = "ERROR"
+        raise
     finally:
         print("\n[Monitor] Capture stopped. Waiting for queued analysis...")
         work_queue.join()
         stop_event.set()
         worker.join(timeout=10.0)
+        store.finish_session(session_id, status=session_status)
+
+        overview = store.overview()
 
         print("\n" + "=" * 72)
         print("LIVE MONITOR SUMMARY")
@@ -238,55 +287,49 @@ def run_live_monitor(
         print(f"Idle windows skipped   : {stats.windows_skipped_empty}")
         print(f"Flowless windows       : {stats.windows_skipped_no_flows}")
         print(f"Analysis errors        : {stats.analysis_errors}")
+        print(f"Persistence errors     : {stats.persistence_errors}")
         print(f"Packets captured       : {stats.packets_captured}")
         print(f"Alerts emitted         : {stats.alerts_emitted}")
+        print(f"Stored windows (all)   : {overview['total_windows']}")
+        print(f"Stored alerts (all)    : {overview['total_alerts']}")
+        print(f"Event database         : {store.db_path}")
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="AI-IDS continuous live network monitor"
+        description="AI-IDS persistent continuous live network monitor"
     )
+    parser.add_argument("--interface", "-i", help="Network interface to monitor")
     parser.add_argument(
-        "--interface",
-        "-i",
-        help="Network interface to monitor",
-    )
-    parser.add_argument(
-        "--window",
-        type=float,
-        default=5.0,
+        "--window", type=float, default=5.0,
         help="Capture window in seconds (default: 5)",
     )
     parser.add_argument(
-        "--cooldown",
-        type=float,
-        default=60.0,
+        "--cooldown", type=float, default=60.0,
         help="Duplicate-alert cooldown in seconds",
     )
     parser.add_argument(
-        "--filter",
-        dest="bpf_filter",
+        "--filter", dest="bpf_filter",
         help="Optional BPF capture filter, e.g. 'tcp or udp'",
     )
     parser.add_argument(
-        "--keep-pcaps",
-        action="store_true",
+        "--keep-pcaps", action="store_true",
         help="Keep generated live PCAP windows",
     )
     parser.add_argument(
-        "--max-windows",
-        type=int,
+        "--max-windows", type=int,
         help="Stop capture after N windows and finish queued analyses",
     )
     parser.add_argument(
-        "--queue-size",
-        type=int,
-        default=0,
+        "--queue-size", type=int, default=0,
         help="Maximum pending analysis windows; 0 means unbounded",
     )
     parser.add_argument(
-        "--list-interfaces",
-        action="store_true",
+        "--event-db", default=str(DEFAULT_EVENT_DB),
+        help="SQLite live-event database path",
+    )
+    parser.add_argument(
+        "--list-interfaces", action="store_true",
         help="List capture interfaces and exit",
     )
     return parser
@@ -312,6 +355,7 @@ def main() -> None:
         keep_pcaps=args.keep_pcaps,
         max_windows=args.max_windows,
         queue_size=args.queue_size,
+        event_db=args.event_db,
     )
 
 
