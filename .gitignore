@@ -52,6 +52,16 @@ data/processed/pcap_flows/
 data/processed/security_reports/
 
 # =========================================================
+# LIVE MONITOR GENERATED DATA
+# =========================================================
+
+data/live/*.pcap
+data/live/*.pcapng
+data/live/*.db
+data/live/*.db-shm
+data/live/*.db-wal
+
+# =========================================================
 # GEOIP DATABASES
 # =========================================================
 
