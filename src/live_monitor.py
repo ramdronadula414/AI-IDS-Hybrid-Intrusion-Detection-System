@@ -1,12 +1,13 @@
 """CLI live network monitor for AI-IDS.
 
-Step 5 architecture:
+Step 8 architecture:
     continuous capture -> queue -> background hybrid analysis
-        -> SQLite live event store
         -> alert cooldown/dedup
-        -> terminal notification
+        -> console / desktop / Telegram / Discord / email notifications
+        -> SQLite live event store
 
-The persistent store is shared with the future Streamlit live dashboard.
+Notification failures are isolated from detection so packet capture and analysis
+continue even when an external service is unavailable or misconfigured.
 """
 
 from __future__ import annotations
@@ -28,7 +29,7 @@ from src.alert_manager import AlertManager
 from src.live_capture import capture_window, list_interfaces
 from src.live_event_store import DEFAULT_EVENT_DB, LiveEventStore
 from src.live_flow_engine import FlowWindow, cleanup_capture, make_window
-from src.notification_engine import notify
+from src.notification_engine import enabled_channels, notify
 from src.realtime_detector import NoUsableFlowsError, analyze_live_window
 
 
@@ -42,6 +43,7 @@ class LiveStats:
     analysis_errors: int = 0
     persistence_errors: int = 0
     alerts_emitted: int = 0
+    notification_failures: int = 0
     packets_captured: int = 0
 
 
@@ -108,6 +110,26 @@ def _analysis_worker(
 
             all_alerts = _extract_alerts(report)
             fresh_alerts = manager.filter_new_alerts(all_alerts)
+            delivered_alerts: list[dict] = []
+
+            if fresh_alerts:
+                for alert in fresh_alerts:
+                    result = notify(alert)
+                    if result.succeeded:
+                        delivered_alerts.append(alert)
+                        stats.alerts_emitted += 1
+                    if result.failed:
+                        stats.notification_failures += len(result.failed)
+            elif decision == "ATTACK":
+                print(
+                    f"[Analyzer] Window {window.sequence}: "
+                    "attack already notified within cooldown window."
+                )
+            else:
+                print(
+                    f"[Analyzer] Window {window.sequence}: "
+                    "no new live alerts."
+                )
 
             try:
                 store.record_window(
@@ -121,7 +143,7 @@ def _analysis_worker(
                         window.created_at,
                         tz=timezone.utc,
                     ).isoformat(),
-                    notified_alerts=fresh_alerts,
+                    notified_alerts=delivered_alerts,
                 )
                 print(
                     f"[Store] Window {window.sequence}: persisted to "
@@ -131,21 +153,6 @@ def _analysis_worker(
                 stats.persistence_errors += 1
                 print(
                     f"[Store] Window {window.sequence}: persistence failed: {exc}"
-                )
-
-            if fresh_alerts:
-                for alert in fresh_alerts:
-                    notify(alert)
-                    stats.alerts_emitted += 1
-            elif decision == "ATTACK":
-                print(
-                    f"[Analyzer] Window {window.sequence}: "
-                    "attack already notified within cooldown window."
-                )
-            else:
-                print(
-                    f"[Analyzer] Window {window.sequence}: "
-                    "no new live alerts."
                 )
         finally:
             if not keep_pcaps:
@@ -175,6 +182,7 @@ def run_live_monitor(
     stop_event = Event()
     store = LiveEventStore(event_db)
     session_id = uuid.uuid4().hex
+    channels = enabled_channels()
 
     store.start_session(
         session_id=session_id,
@@ -201,7 +209,7 @@ def run_live_monitor(
     worker.start()
 
     print("=" * 72)
-    print("AI-IDS LIVE NETWORK MONITOR — PERSISTENT CONTINUOUS MODE")
+    print("AI-IDS LIVE NETWORK MONITOR — STEP 8 NOTIFICATION MODE")
     print("=" * 72)
     print(f"Session ID      : {session_id}")
     print(f"Interface       : {interface}")
@@ -209,8 +217,9 @@ def run_live_monitor(
     print(f"Alert cooldown  : {cooldown_seconds:.1f} seconds")
     print(f"BPF filter      : {bpf_filter or 'None'}")
     print(f"Queue size      : {'unbounded' if queue_size == 0 else queue_size}")
+    print(f"Notifications   : {', '.join(channels)}")
     print(f"Event database  : {store.db_path}")
-    print("Architecture    : capture -> queue -> analysis -> SQLite -> alert")
+    print("Architecture    : capture -> analysis -> notify -> SQLite")
     print("Stop            : Ctrl+C")
 
     sequence = 0
@@ -288,6 +297,7 @@ def run_live_monitor(
         print(f"Flowless windows       : {stats.windows_skipped_no_flows}")
         print(f"Analysis errors        : {stats.analysis_errors}")
         print(f"Persistence errors     : {stats.persistence_errors}")
+        print(f"Notification failures  : {stats.notification_failures}")
         print(f"Packets captured       : {stats.packets_captured}")
         print(f"Alerts emitted         : {stats.alerts_emitted}")
         print(f"Stored windows (all)   : {overview['total_windows']}")
@@ -297,7 +307,7 @@ def run_live_monitor(
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="AI-IDS persistent continuous live network monitor"
+        description="AI-IDS persistent live network monitor with notifications"
     )
     parser.add_argument("--interface", "-i", help="Network interface to monitor")
     parser.add_argument(
