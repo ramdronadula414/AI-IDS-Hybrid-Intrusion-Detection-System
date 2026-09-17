@@ -4,10 +4,6 @@ Phase 1 workflow:
     local interface -> short PCAP window -> existing hybrid AI-IDS pipeline
     -> cooldown/dedup -> terminal alert
 
-Run on Kali/Linux with sufficient packet-capture privileges, for example:
-    sudo -E python src/live_monitor.py --list-interfaces
-    sudo -E python src/live_monitor.py --interface eth0 --window 5
-
 Use Ctrl+C to stop.
 """
 
@@ -25,7 +21,7 @@ from src.alert_manager import AlertManager
 from src.live_capture import capture_window, list_interfaces
 from src.live_flow_engine import cleanup_capture, make_window
 from src.notification_engine import notify
-from src.realtime_detector import analyze_live_window
+from src.realtime_detector import NoUsableFlowsError, analyze_live_window
 
 
 def _extract_alerts(report: dict) -> list[dict]:
@@ -73,7 +69,12 @@ def run_live_monitor(
 
             try:
                 print("Running hybrid AI-IDS analysis...")
-                report = analyze_live_window(window.pcap_path)
+                try:
+                    report = analyze_live_window(window.pcap_path)
+                except NoUsableFlowsError as exc:
+                    print(f"No usable CICFlowMeter flows in this window; skipping.\nReason: {exc}")
+                    continue
+
                 decision = report.get("final_decision", "UNKNOWN")
                 severity = report.get("severity", "UNKNOWN")
                 attack_type = report.get("attack_type", "Unknown")
