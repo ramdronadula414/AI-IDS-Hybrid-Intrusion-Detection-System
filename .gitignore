@@ -52,7 +52,7 @@ data/processed/pcap_flows/
 data/processed/security_reports/
 
 # =========================================================
-# LIVE MONITOR GENERATED DATA / LOCAL SECRETS
+# LIVE MONITOR GENERATED DATA / LOCAL CONFIG
 # =========================================================
 
 data/live/*.pcap
@@ -62,6 +62,8 @@ data/live/*.db-shm
 data/live/*.db-wal
 data/live/notification_config.json
 data/live/notification_config.json.tmp
+data/live/monitoring_config.json
+data/live/monitoring_config.json.tmp
 
 # =========================================================
 # GEOIP DATABASES
