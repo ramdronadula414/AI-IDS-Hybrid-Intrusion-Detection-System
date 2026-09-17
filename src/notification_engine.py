@@ -1,8 +1,8 @@
 """Notification backends for live AI-IDS alerts.
 
-Configuration comes from dashboard-managed local settings first, with existing
-environment variables retained as fallbacks. Backends fail independently so a
-notification problem never stops packet capture or IDS analysis.
+Configuration comes from dashboard-managed local settings when that file exists,
+with environment variables retained as fallbacks. Backends fail independently
+so a notification problem never stops packet capture or IDS analysis.
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ import subprocess
 from typing import Any
 from urllib import parse, request
 
-from src.notification_config import load_notification_config
+from src.notification_config import DEFAULT_CONFIG_PATH, load_notification_config
 
 
 SEVERITY_ICON = {
@@ -51,17 +51,24 @@ def _env_truthy(name: str, default: bool = False) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _dashboard_config() -> dict[str, Any] | None:
+    if not DEFAULT_CONFIG_PATH.exists():
+        return None
+    return load_notification_config()
+
+
 def enabled_channels() -> list[str]:
-    config = load_notification_config()
-    configured = config.get("channels")
-    if isinstance(configured, list):
-        channels = [
-            str(item).strip().lower()
-            for item in configured
-            if str(item).strip().lower() in SUPPORTED_CHANNELS
-        ]
-        if channels:
-            return list(dict.fromkeys(channels))
+    config = _dashboard_config()
+    if config is not None:
+        configured = config.get("channels")
+        if isinstance(configured, list):
+            channels = [
+                str(item).strip().lower()
+                for item in configured
+                if str(item).strip().lower() in SUPPORTED_CHANNELS
+            ]
+            if channels:
+                return list(dict.fromkeys(channels))
 
     raw = os.getenv("AI_IDS_NOTIFY_CHANNELS", ",".join(DEFAULT_CHANNELS))
     channels: list[str] = []
@@ -73,8 +80,8 @@ def enabled_channels() -> list[str]:
 
 
 def minimum_severity() -> str:
-    config = load_notification_config()
-    level = str(config.get("minimum_severity", "LOW")).upper()
+    config = _dashboard_config()
+    level = str(config.get("minimum_severity", "LOW") if config else os.getenv("AI_IDS_MINIMUM_SEVERITY", "LOW")).upper()
     return level if level in SEVERITY_RANK else "LOW"
 
 
@@ -137,9 +144,10 @@ def notify_desktop(alert: dict[str, Any]) -> None:
 
 
 def notify_telegram(alert: dict[str, Any]) -> None:
-    config = load_notification_config().get("telegram", {})
-    token = str(config.get("bot_token") or os.getenv("AI_IDS_TELEGRAM_BOT_TOKEN", "")).strip()
-    chat_id = str(config.get("chat_id") or os.getenv("AI_IDS_TELEGRAM_CHAT_ID", "")).strip()
+    config = _dashboard_config()
+    telegram = config.get("telegram", {}) if config else {}
+    token = str(telegram.get("bot_token") or os.getenv("AI_IDS_TELEGRAM_BOT_TOKEN", "")).strip()
+    chat_id = str(telegram.get("chat_id") or os.getenv("AI_IDS_TELEGRAM_CHAT_ID", "")).strip()
     if not token or not chat_id:
         raise RuntimeError("Telegram bot token and chat ID are required")
 
@@ -160,8 +168,9 @@ def notify_telegram(alert: dict[str, Any]) -> None:
 
 
 def notify_discord(alert: dict[str, Any]) -> None:
-    config = load_notification_config().get("discord", {})
-    webhook_url = str(config.get("webhook_url") or os.getenv("AI_IDS_DISCORD_WEBHOOK_URL", "")).strip()
+    config = _dashboard_config()
+    discord = config.get("discord", {}) if config else {}
+    webhook_url = str(discord.get("webhook_url") or os.getenv("AI_IDS_DISCORD_WEBHOOK_URL", "")).strip()
     if not webhook_url:
         raise RuntimeError("Discord webhook URL is required")
 
@@ -182,13 +191,14 @@ def notify_discord(alert: dict[str, Any]) -> None:
 
 
 def notify_email(alert: dict[str, Any]) -> None:
-    config = load_notification_config().get("email", {})
-    host = str(config.get("smtp_host") or os.getenv("AI_IDS_SMTP_HOST", "")).strip()
-    port = int(config.get("smtp_port") or os.getenv("AI_IDS_SMTP_PORT", "587"))
-    username = str(config.get("username") or os.getenv("AI_IDS_SMTP_USERNAME", "")).strip()
-    password = str(config.get("password") or os.getenv("AI_IDS_SMTP_PASSWORD", ""))
-    sender = str(config.get("from_address") or os.getenv("AI_IDS_EMAIL_FROM", username)).strip()
-    recipients_raw = str(config.get("to_addresses") or os.getenv("AI_IDS_EMAIL_TO", ""))
+    config = _dashboard_config()
+    email = config.get("email", {}) if config else {}
+    host = str(email.get("smtp_host") or os.getenv("AI_IDS_SMTP_HOST", "")).strip()
+    port = int(email.get("smtp_port") or os.getenv("AI_IDS_SMTP_PORT", "587"))
+    username = str(email.get("username") or os.getenv("AI_IDS_SMTP_USERNAME", "")).strip()
+    password = str(email.get("password") or os.getenv("AI_IDS_SMTP_PASSWORD", ""))
+    sender = str(email.get("from_address") or os.getenv("AI_IDS_EMAIL_FROM", username)).strip()
+    recipients_raw = str(email.get("to_addresses") or os.getenv("AI_IDS_EMAIL_TO", ""))
     recipients = [item.strip() for item in recipients_raw.split(",") if item.strip()]
     if not host or not sender or not recipients:
         raise RuntimeError("SMTP host, sender and recipient email are required")
@@ -201,8 +211,8 @@ def notify_email(alert: dict[str, Any]) -> None:
     message["To"] = ", ".join(recipients)
     message.set_content(format_detailed_alert(alert))
 
-    use_ssl = bool(config.get("use_ssl", _env_truthy("AI_IDS_SMTP_SSL", False)))
-    use_starttls = bool(config.get("use_starttls", _env_truthy("AI_IDS_SMTP_STARTTLS", not use_ssl)))
+    use_ssl = bool(email.get("use_ssl", _env_truthy("AI_IDS_SMTP_SSL", False)))
+    use_starttls = bool(email.get("use_starttls", _env_truthy("AI_IDS_SMTP_STARTTLS", not use_ssl)))
     context = ssl.create_default_context()
 
     if use_ssl:
