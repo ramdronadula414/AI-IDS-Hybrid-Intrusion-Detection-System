@@ -53,7 +53,9 @@ def capture_window(
     """Capture one time-bounded PCAP window from a local interface.
 
     The caller normally needs root/CAP_NET_RAW privileges on Linux.
-    Packets are streamed directly to disk instead of being retained in memory.
+    The PCAP writer is created lazily on the first captured packet so an idle
+    interface does not produce an invalid empty capture or a Scapy link-layer
+    warning.
     """
     if duration_seconds <= 0:
         raise ValueError("duration_seconds must be greater than zero")
@@ -69,10 +71,12 @@ def capture_window(
     pcap_path = output_dir / f"live_{safe_iface}_{stamp}.pcap"
 
     packet_count = 0
-    writer = PcapWriter(str(pcap_path), append=False, sync=True)
+    writer: PcapWriter | None = None
 
     def _write(packet):
-        nonlocal packet_count
+        nonlocal packet_count, writer
+        if writer is None:
+            writer = PcapWriter(str(pcap_path), append=False, sync=True)
         writer.write(packet)
         packet_count += 1
 
@@ -88,11 +92,11 @@ def capture_window(
     try:
         sniff(**sniff_kwargs)
     finally:
-        writer.close()
+        if writer is not None:
+            writer.close()
 
     finished = datetime.now(timezone.utc)
 
-    # Keep an empty window from entering CICFlowMeter.
     if packet_count == 0:
         pcap_path.unlink(missing_ok=True)
 
